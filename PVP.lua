@@ -1,556 +1,726 @@
--- pvp_menu_v6.lua | Roblox PVP mod menu — fixed slider + toggle sync
+--[[
+    Delta PvP Mod Menu
+    Executor: Delta (Mobile/PC)
+    Features: Aimbot, ESP, Speed Hack, Noclip, FOV Changer
+    Usage: Paste into Delta executor, attach to Roblox, execute.
+    Toggle GUI: RightShift
+]]
 
-if not getgenv then error("[PVP] executor dengan getgenv() dibutuhkan") end
-
-local PVP = {}
-getgenv().PVP = PVP
+-- ═══════════════════════════════════════════════════════════════
+-- BOOT GUARD
+-- ═══════════════════════════════════════════════════════════════
+if not game:IsLoaded() then game.Loaded:Wait() end
+task.wait(0.3)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local LP = Players.LocalPlayer
-if not LP then error("[PVP] tunggu game load") end
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local Camera = workspace.CurrentCamera
 
--- ============ CONFIG ============
-PVP.Config = {
-    aimbot = false, aimFov = 120, aimSmooth = 0.25, aimPart = "Head",
-    hitbox = false, hitboxSize = 8,
-    esp = false, espColor = Color3.fromRGB(0, 255, 120),
-    wallhack = false,
-    speed = false, speedValue = 50,
-    noclip = false,
-    pov = false, povValue = 70,
-}
-PVP.Defaults = { speedValue = 50, povValue = 70, aimFov = 120, aimSmooth = 0.25, hitboxSize = 8 }
+local LocalPlayer = Players.LocalPlayer
+    or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    and Players.LocalPlayer
 
--- ============ UTIL ============
-local function getChar(plr)
-    local c = plr.Character
-    if not c then return nil end
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    local root = c:FindFirstChild("HumanoidRootPart")
-    if not hum or not root or hum.Health <= 0 then return nil end
-    return c, hum, root
-end
-
-local function getTarget()
-    local cam = workspace.CurrentCamera
-    local mouse = UIS:GetMouseLocation()
-    local best, bestDist = nil, PVP.Config.aimFov
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        local char = getChar(plr)
-        if not char then continue end
-        local part = char:FindFirstChild(PVP.Config.aimPart) or char:FindFirstChild("HumanoidRootPart")
-        if not part then continue end
-        local screen, onScreen = cam:WorldToViewportPoint(part.Position)
-        if not onScreen then continue end
-        local d = (Vector2.new(screen.X, screen.Y) - mouse).Magnitude
-        if d < bestDist then best, bestDist = part, d end
-    end
-    return best
-end
-
--- ============ FITUR: AIMBOT ============
-local function doAim()
-    local target = getTarget()
-    if not target then return end
-    local cam = workspace.CurrentCamera
-    local alpha = 1 - PVP.Config.aimSmooth  -- smooth besar = alpha kecil = lebih halus
-    cam.CFrame = cam.CFrame:Lerp(CFrame.new(cam.CFrame.Position, target.Position), alpha)
-end
-
--- ============ FITUR: HITBOX ============
-local function applyHitbox()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        local char, _, root = getChar(plr)
-        if not char then continue end
-        local hb = char:FindFirstChild("__pvp_hitbox")
-        if not hb then
-            hb = Instance.new("Part")
-            hb.Name = "__pvp_hitbox"; hb.Transparency = 1; hb.CanCollide = false
-            hb.CanQuery = false; hb.Massless = true; hb.Anchored = false; hb.Parent = char
-            local w = Instance.new("WeldConstraint"); w.Part0 = hb; w.Part1 = root; w.Parent = hb
-        end
-        local s = PVP.Config.hitboxSize
-        hb.Size = Vector3.new(s, s, s)
-        hb.CFrame = root.CFrame
-    end
-end
-
-local function clearHitbox()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local char = plr.Character
-        if not char then continue end
-        local hb = char:FindFirstChild("__pvp_hitbox")
-        if hb then hb:Destroy() end
-    end
-end
-
--- ============ FITUR: ESP ============
-local function applyESP()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        local char = plr.Character
-        if not char then continue end
-        local head = char:FindFirstChild("Head")
-        if not head then continue end
-        local bb = head:FindFirstChild("__pvp_esp")
-        if not bb then
-            bb = Instance.new("BillboardGui")
-            bb.Name = "__pvp_esp"; bb.Adornee = head
-            bb.Size = UDim2.new(0, 200, 0, 40)
-            bb.AlwaysOnTop = true; bb.Parent = head
-            local tl = Instance.new("TextLabel")
-            tl.Name = "__label"
-            tl.Size = UDim2.new(1, 0, 1, 0); tl.BackgroundTransparency = 1
-            tl.TextStrokeTransparency = 0; tl.Font = Enum.Font.Code
-            tl.TextSize = 14; tl.Text = plr.Name; tl.Parent = bb
-        end
-        local tl = bb:FindFirstChild("__label")
-        if tl then tl.TextColor3 = PVP.Config.espColor end
-    end
-end
-
-local function clearESP()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local char = plr.Character
-        if not char then continue end
-        local head = char:FindFirstChild("Head")
-        if head then
-            local bb = head:FindFirstChild("__pvp_esp")
-            if bb then bb:Destroy() end
-        end
-    end
-end
-
--- ============ FITUR: WALLHACK ============
-local function applyWallhack()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        local char = plr.Character
-        if not char then continue end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then continue end
-        local hl = root:FindFirstChild("__pvp_hl")
-        if not hl then
-            hl = Instance.new("Highlight")
-            hl.Name = "__pvp_hl"
-            hl.Parent = root
-        end
-        hl.FillColor = PVP.Config.espColor
-        hl.FillTransparency = 0.6
-        hl.OutlineColor = Color3.new(1, 1, 1)
-        hl.OutlineTransparency = 0
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Adornee = char
-    end
-end
-
-local function clearWallhack()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        local char = plr.Character
-        if not char then continue end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local hl = root:FindFirstChild("__pvp_hl")
-            if hl then hl:Destroy() end
-        end
-    end
-end
-
--- ============ FITUR: SPEED ============
-local function applySpeed()
-    local _, hum = getChar(LP)
-    if hum then hum.WalkSpeed = PVP.Config.speedValue end
-end
-
-local function clearSpeed()
-    local _, hum = getChar(LP)
-    if hum and hum.WalkSpeed ~= PVP.Defaults.speedValue then
-        hum.WalkSpeed = PVP.Defaults.speedValue
-    end
-end
-
--- ============ FITUR: NOCLIP ============
-local function applyNoclip()
-    local char = LP.Character
-    if not char then return end
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
-    end
-end
-
--- ============ FITUR: POV ============
-local function applyPOV()
-    local cam = workspace.CurrentCamera
-    if cam then cam.FieldOfView = PVP.Config.povValue end
-end
-
-local function clearPOV()
-    local cam = workspace.CurrentCamera
-    if cam then cam.FieldOfView = 70 end
-end
-
--- ============ MAIN LOOP (on/off beneran) ============
-RunService.RenderStepped:Connect(function()
-    if PVP.Config.aimbot then doAim() end
-    if PVP.Config.esp then applyESP() else clearESP() end
-    if PVP.Config.wallhack then applyWallhack() else clearWallhack() end
-    if PVP.Config.pov then applyPOV() else clearPOV() end
-    if PVP.Config.hitbox then applyHitbox() else clearHitbox() end
+-- Delta-safe GUI parent
+local guiParent
+pcall(function()
+    guiParent = gethui and gethui() or game:GetService("CoreGui")
 end)
+if not guiParent then
+    guiParent = LocalPlayer:WaitForChild("PlayerGui", 10) or LocalPlayer.PlayerGui
+end
 
-RunService.Stepped:Connect(function()
-    if PVP.Config.noclip then applyNoclip() end
-    if PVP.Config.speed then applySpeed() else clearSpeed() end
-end)
+-- Clean previous instance
+for _, obj in ipairs(guiParent:GetChildren()) do
+    if obj.Name == "DeltaPvPMenu" then obj:Destroy() end
+end
 
--- ============ UI ============
-PVP.UI = { open = true }
-
-local vp = workspace.CurrentCamera.ViewportSize
-local panelW = math.min(360, vp.X - 32)
-
-local COL = {
-    bg = Color3.fromRGB(14, 15, 20),
-    accent = Color3.fromRGB(0, 200, 130),
-    accent2 = Color3.fromRGB(0, 120, 255),
-    on = Color3.fromRGB(0, 170, 100),
-    off = Color3.fromRGB(38, 40, 50),
-    txt = Color3.fromRGB(235, 237, 245),
-    dim = Color3.fromRGB(150, 155, 170),
-    red = Color3.fromRGB(220, 60, 70),
+-- ═══════════════════════════════════════════════════════════════
+-- CONFIG STATE
+-- ═══════════════════════════════════════════════════════════════
+local Config = {
+    Aimbot = {
+        Enabled = false,
+        Key = Enum.UserInputType.MouseButton2,
+        FOV = 120,
+        Smoothness = 0.15,
+        AimPart = "Head",
+        WallCheck = false,
+        TeamCheck = true,
+        ShowFOV = true,
+        AutoFire = false,
+    },
+    ESP = {
+        Enabled = false,
+        Box = true,
+        Name = true,
+        Distance = true,
+        Tracer = false,
+        Health = true,
+    },
+    Speed = {
+        Enabled = false,
+        Value = 50,
+        Original = 16,
+    },
+    Noclip = {
+        Enabled = false,
+    },
+    FOV = {
+        Enabled = false,
+        Value = 90,
+        Original = 70,
+    },
+    Fullbright = {
+        Enabled = false,
+    },
+    InfiniteJump = {
+        Enabled = false,
+    },
 }
 
-local function mk(cls, props, parent)
-    local o = Instance.new(cls)
-    for k, v in pairs(props) do o[k] = v end
-    if parent then o.Parent = parent end
-    return o
+local Connections = {}
+local ESPObjects = {}
+local FOVCircle = nil
+local HoldingAim = false
+
+-- ═══════════════════════════════════════════════════════════════
+-- GUI BUILDER
+-- ═══════════════════════════════════════════════════════════════
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DeltaPvPMenu"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = guiParent
+
+-- Main Frame
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 280, 0, 420)
+Main.Position = UDim2.new(0.5, -140, 0.3, -210)
+Main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = true
+Main.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = Main
+
+-- Title Bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 36)
+TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 8)
+TitleCorner.Parent = TitleBar
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Size = UDim2.new(1, -70, 1, 0)
+TitleText.Position = UDim2.new(0, 12, 0, 0)
+TitleText.BackgroundTransparency = 1
+TitleText.Text = "DELTA PVP // ollie"
+TitleText.TextColor3 = Color3.fromRGB(220, 60, 120)
+TitleText.TextSize = 14
+TitleText.Font = Enum.Font.GothamBold
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.Parent = TitleBar
+
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0, 28, 0, 28)
+ToggleBtn.Position = UDim2.new(1, -38, 0, 4)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+ToggleBtn.Text = "—"
+ToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+ToggleBtn.TextSize = 16
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Parent = TitleBar
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 6)
+ToggleCorner.Parent = ToggleBtn
+
+-- Content Scroll
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1, -16, 1, -52)
+Scroll.Position = UDim2.new(0, 8, 0, 44)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.Parent = Main
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 6)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Parent = Scroll
+
+-- ═══════════════════════════════════════════════════════════════
+-- HELPER FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
+local function CreateLabel(text, color)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 0, 24)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = color or Color3.fromRGB(180, 180, 200)
+    lbl.TextSize = 12
+    lbl.Font = Enum.Font.GothamSemibold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = Scroll
+    return lbl
 end
 
-local gui = mk("ScreenGui", {
-    Name = "__pvp_menu", ResetOnSpawn = false,
-    IgnoreGuiInset = true, DisplayOrder = 999,
-    Parent = LP:WaitForChild("PlayerGui"),
-}, LP:WaitForChild("PlayerGui"))
+local function CreateToggle(name, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 32)
+    frame.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
+    frame.BorderSizePixel = 0
+    frame.Parent = Scroll
 
--- FOV circle
-local fovGui = mk("ScreenGui", {
-    Name = "__pvp_fov", ResetOnSpawn = false,
-    IgnoreGuiInset = true, DisplayOrder = 998, Parent = gui.Parent,
-})
-local fovCircle = mk("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.new(0, 240, 0, 240),
-    BackgroundTransparency = 1, Visible = false, Parent = fovGui,
-}, fovGui)
-mk("UICorner", { CornerRadius = UDim.new(1, 0) }, fovCircle)
-mk("UIStroke", { Color = COL.accent, Thickness = 1.5, Transparency = 0.25 }, fovCircle)
+    local fc = Instance.new("UICorner")
+    fc.CornerRadius = UDim.new(0, 5)
+    fc.Parent = frame
 
--- toggle button
-local toggleBtn = mk("TextButton", {
-    Size = UDim2.new(0, 54, 0, 54),
-    Position = UDim2.new(0, 16, 0, 90),
-    BackgroundColor3 = COL.accent, Text = "▼",
-    TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold,
-    TextSize = 20, AutoButtonColor = false, Parent = gui,
-}, gui)
-mk("UICorner", { CornerRadius = UDim.new(1, 0) }, toggleBtn)
-mk("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 2, Transparency = 0.5 }, toggleBtn)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -60, 1, 0)
+    label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(210, 210, 220)
+    label.TextSize = 12
+    label.Font = Enum.Font.Gotham
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
 
--- main frame
-local targetH = math.min(540, vp.Y - 180)
-local frame = mk("Frame", {
-    Size = UDim2.new(0, panelW, 0, targetH),
-    Position = UDim2.new(0, 16, 0, 150),
-    BackgroundColor3 = COL.bg, BorderSizePixel = 0,
-    ClipsDescendants = true, Visible = true, Parent = gui,
-}, gui)
-mk("UICorner", { CornerRadius = UDim.new(0, 14) }, frame)
-mk("UIStroke", { Color = COL.accent, Thickness = 1.5, Transparency = 0.3 }, frame)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 44, 0, 22)
+    btn.Position = UDim2.new(1, -54, 0, 5)
+    btn.BackgroundColor3 = default and Color3.fromRGB(180, 50, 90) or Color3.fromRGB(45, 45, 55)
+    btn.Text = default and "ON" or "OFF"
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 10
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = frame
 
-local header = mk("Frame", {
-    Size = UDim2.new(1, 0, 0, 48), BackgroundColor3 = COL.accent,
-    BorderSizePixel = 0, Active = true, Parent = frame,
-}, frame)
-mk("UICorner", { CornerRadius = UDim.new(0, 14) }, header)
-mk("UIGradient", {
-    Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, COL.accent),
-        ColorSequenceKeypoint.new(1, COL.accent2),
-    }),
-}, header)
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 4)
+    bc.Parent = btn
 
-mk("TextLabel", {
-    Size = UDim2.new(1, -110, 1, 0), Position = UDim2.new(0, 16, 0, 0),
-    BackgroundTransparency = 1, Text = "✦ PVP MENU v6",
-    TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold,
-    TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
-}, header)
-
-local closeBtn = mk("TextButton", {
-    Size = UDim2.new(0, 36, 0, 36), Position = UDim2.new(1, -44, 0, 6),
-    BackgroundColor3 = COL.red, Text = "✕", TextColor3 = Color3.new(1, 1, 1),
-    Font = Enum.Font.GothamBold, TextSize = 16, AutoButtonColor = false, Parent = header,
-}, header)
-mk("UICorner", { CornerRadius = UDim.new(0, 8) }, closeBtn)
-
--- drag header
-local dragging, dragStart, startPos = false, nil, nil
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true; dragStart = input.Position; startPos = frame.Position
-    end
-end)
-UIS.InputChanged:Connect(function(input)
-    if not dragging then return end
-    if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
-        local d = input.Position - dragStart
-        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                    startPos.Y.Scale, startPos.Y.Offset + d.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
-end)
-
--- scroll body
-local scroll = mk("ScrollingFrame", {
-    Size = UDim2.new(1, -16, 1, -58), Position = UDim2.new(0, 8, 0, 52),
-    BackgroundTransparency = 1, ScrollBarThickness = 5,
-    ScrollingDirection = Enum.ScrollingDirection.Y,
-    CanvasSize = UDim2.new(0, 0, 0, 0), Parent = frame,
-}, frame)
-mk("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 12) }, scroll)
-local layout = mk("UIListLayout", {
-    Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll,
-}, scroll)
-
--- ============ UI BUILDERS ============
-local function section(text)
-    mk("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1,
-        Text = "▸ " .. text, TextColor3 = COL.accent,
-        Font = Enum.Font.GothamBold, TextSize = 12,
-        TextXAlignment = Enum.TextXAlignment.Left, Parent = scroll,
-    }, scroll)
-end
-
-local function addToggle(label, key, onChange)
-    local btn = mk("TextButton", {
-        Size = UDim2.new(1, 0, 0, 44),
-        BackgroundColor3 = PVP.Config[key] and COL.on or COL.off,
-        Text = (PVP.Config[key] and "● " or "○ ") .. label,
-        TextColor3 = COL.txt, Font = Enum.Font.Gotham, TextSize = 14,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        AutoButtonColor = false, Parent = scroll,
-    }, scroll)
-    mk("UICorner", { CornerRadius = UDim.new(0, 10) }, btn)
-    mk("UIPadding", { PaddingLeft = UDim.new(0, 14) }, btn)
+    local state = default
     btn.MouseButton1Click:Connect(function()
-        PVP.Config[key] = not PVP.Config[key]
-        btn.BackgroundColor3 = PVP.Config[key] and COL.on or COL.off
-        btn.Text = (PVP.Config[key] and "● " or "○ ") .. label
-        if key == "esp" and not PVP.Config[key] then clearESP() end
-        if key == "wallhack" and not PVP.Config[key] then clearWallhack() end
-        if key == "hitbox" and not PVP.Config[key] then clearHitbox() end
-        if key == "speed" and not PVP.Config[key] then clearSpeed() end
-        if key == "pov" and not PVP.Config[key] then clearPOV() end
-        if onChange then onChange() end
+        state = not state
+        btn.Text = state and "ON" or "OFF"
+        btn.BackgroundColor3 = state and Color3.fromRGB(180, 50, 90) or Color3.fromRGB(45, 45, 55)
+        if callback then callback(state) end
     end)
+
+    return frame
 end
 
--- SLIDER: koneksi dibind per-slider, bukan global
-local function addSlider(label, key, min, max, isFloat)
-    local holder = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 56), BackgroundTransparency = 1, Parent = scroll,
-    }, scroll)
+local function CreateSlider(name, min, max, default, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 42)
+    frame.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
+    frame.BorderSizePixel = 0
+    frame.Parent = Scroll
 
-    mk("TextLabel", {
-        Size = UDim2.new(1, -70, 0, 20), BackgroundTransparency = 1,
-        Text = label, TextColor3 = COL.dim, Font = Enum.Font.Gotham,
-        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = holder,
-    }, holder)
+    local fc = Instance.new("UICorner")
+    fc.CornerRadius = UDim.new(0, 5)
+    fc.Parent = frame
 
-    local valLbl = mk("TextLabel", {
-        Size = UDim2.new(0, 65, 0, 20), Position = UDim2.new(1, -65, 0, 0),
-        BackgroundTransparency = 1, Text = tostring(PVP.Config[key]),
-        TextColor3 = COL.accent, Font = Enum.Font.GothamBold,
-        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right, Parent = holder,
-    }, holder)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 16)
+    label.Position = UDim2.new(0, 10, 0, 4)
+    label.BackgroundTransparency = 1
+    label.Text = name .. ": " .. default
+    label.TextColor3 = Color3.fromRGB(210, 210, 220)
+    label.TextSize = 11
+    label.Font = Enum.Font.Gotham
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
 
-    local track = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 10), Position = UDim2.new(0, 0, 0, 32),
-        BackgroundColor3 = COL.off, Parent = holder,
-    }, holder)
-    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+    local barBg = Instance.new("Frame")
+    barBg.Size = UDim2.new(1, -20, 0, 6)
+    barBg.Position = UDim2.new(0, 10, 0, 26)
+    barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    barBg.BorderSizePixel = 0
+    barBg.Parent = frame
 
-    local fill = mk("Frame", {
-        Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = COL.accent, Parent = track,
-    }, track)
-    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
+    local bgc = Instance.new("UICorner")
+    bgc.CornerRadius = UDim.new(0, 3)
+    bgc.Parent = barBg
 
-    local knob = mk("Frame", {
-        Size = UDim2.new(0, 20, 0, 20),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0, 0, 0.5, 0),
-        BackgroundColor3 = Color3.new(1, 1, 1), Parent = track,
-    }, track)
-    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
-    mk("UIStroke", { Color = COL.accent, Thickness = 2 }, knob)
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(180, 50, 90)
+    fill.BorderSizePixel = 0
+    fill.Parent = barBg
 
-    local function fmt(v)
-        if isFloat then return string.format("%.2f", v) end
-        return tostring(math.floor(v))
+    local fillc = Instance.new("UICorner")
+    fillc.CornerRadius = UDim.new(0, 3)
+    fillc.Parent = fill
+
+    local dragging = false
+    local function updateSlider(input)
+        local pos = math.clamp((input.Position.X - barBg.AbsolutePosition.X) / barBg.AbsoluteSize.X, 0, 1)
+        local val = math.floor(min + (max - min) * pos)
+        fill.Size = UDim2.new(pos, 0, 1, 0)
+        label.Text = name .. ": " .. val
+        if callback then callback(val) end
     end
 
-    local function setRel(rel)
-        rel = math.clamp(rel, 0, 1)
-        local raw = min + (max - min) * rel
-        local v
-        if isFloat then
-            v = math.floor(raw * 100 + 0.5) / 100
-        else
-            v = math.floor(raw + 0.5)
-        end
-        PVP.Config[key] = v
-        valLbl.Text = fmt(v)
-        fill.Size = UDim2.new(rel, 0, 1, 0)
-        knob.Position = UDim2.new(rel, 0, 0.5, 0)
-        if key == "aimFov" then
-            local s = v * 2
-            fovCircle.Size = UDim2.new(0, s, 0, s)
-        end
-    end
-
-    -- init posisi
-    local initRel = (PVP.Config[key] - min) / (max - min)
-    fill.Size = UDim2.new(initRel, 0, 1, 0)
-    knob.Position = UDim2.new(initRel, 0, 0.5, 0)
-
-    -- drag: koneksi lokal per slider
-    local sliding = false
-    local function update(input)
-        local px = input.Position.X - track.AbsolutePosition.X
-        setRel(px / track.AbsoluteSize.X)
-    end
-
-    track.InputBegan:Connect(function(input)
+    barBg.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            sliding = true
-            update(input)
+            dragging = true
+            updateSlider(input)
         end
     end)
 
-    local conn
-    local function startListen()
-        if conn then conn:Disconnect() end
-        conn = UIS.InputChanged:Connect(function(input)
-            if not sliding then return end
-            if input.UserInputType == Enum.UserInputType.MouseMovement
-                or input.UserInputType == Enum.UserInputType.Touch then
-                update(input)
-            end
-        end)
-    end
-    local endConn = UIS.InputEnded:Connect(function(input)
+    barBg.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            updateSlider(input)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            sliding = false
+            dragging = false
         end
     end)
-    startListen()
 
-    return holder
+    return frame
 end
 
--- ============ CONTENT ============
-section("AIMBOT")
-addToggle("Aimbot", "aimbot")
-addSlider("Aim FOV", "aimFov", 10, 500, false)
-addSlider("Aim Smooth", "aimSmooth", 0.05, 0.95, true)
+-- ═══════════════════════════════════════════════════════════════
+-- BUILD GUI
+-- ═══════════════════════════════════════════════════════════════
+CreateLabel("// AIMBOT", Color3.fromRGB(220, 60, 120))
 
-section("VISUAL")
-addToggle("ESP Player", "esp")
-addToggle("Wallhack (Chams)", "wallhack")
-addToggle("Hitbox Expander", "hitbox")
-addSlider("Hitbox Size", "hitboxSize", 2, 30, false)
+CreateToggle("Aimbot", false, function(v) Config.Aimbot.Enabled = v end)
+CreateToggle("Show FOV Circle", true, function(v) Config.Aimbot.ShowFOV = v end)
+CreateToggle("Wall Check", false, function(v) Config.Aimbot.WallCheck = v end)
+CreateToggle("Team Check", true, function(v) Config.Aimbot.TeamCheck = v end)
+CreateSlider("FOV Radius", 30, 400, 120, function(v) Config.Aimbot.FOV = v end)
+CreateSlider("Smoothness %", 1, 100, 15, function(v) Config.Aimbot.Smoothness = v / 100 end)
 
-section("MOVEMENT")
-addToggle("Speed", "speed")
-addSlider("Speed Value", "speedValue", 16, 200, false)
-addToggle("Noclip", "noclip")
+CreateLabel("// ESP", Color3.fromRGB(220, 60, 120))
 
-section("CAMERA")
-addToggle("POV Override", "pov")
-addSlider("Camera FOV", "povValue", 20, 120, false)
+CreateToggle("ESP Enabled", false, function(v) Config.ESP.Enabled = v end)
+CreateToggle("Box", true, function(v) Config.ESP.Box = v end)
+CreateToggle("Name", true, function(v) Config.ESP.Name = v end)
+CreateToggle("Distance", true, function(v) Config.ESP.Distance = v end)
+CreateToggle("Health", true, function(v) Config.ESP.Health = v end)
+CreateToggle("Tracer", false, function(v) Config.ESP.Tracer = v end)
 
--- auto canvas
-local function resizeCanvas()
-    scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 16)
-end
-resizeCanvas()
-layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(resizeCanvas)
+CreateLabel("// MOVEMENT", Color3.fromRGB(220, 60, 120))
 
--- ============ OPEN / CLOSE ============
-local function setOpen(v)
-    PVP.UI.open = v
+CreateToggle("Speed Hack", false, function(v)
+    Config.Speed.Enabled = v
+    if not v and LocalPlayer.Character then
+        local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.WalkSpeed = Config.Speed.Original end
+    end
+end)
+CreateSlider("Speed Value", 16, 300, 50, function(v) Config.Speed.Value = v end)
+
+CreateToggle("Noclip", false, function(v) Config.Noclip.Enabled = v end)
+CreateToggle("Infinite Jump", false, function(v) Config.InfiniteJump.Enabled = v end)
+
+CreateLabel("// VISUAL", Color3.fromRGB(220, 60, 120))
+
+CreateToggle("FOV Changer", false, function(v)
+    Config.FOV.Enabled = v
+    if not v then Camera.FieldOfView = Config.FOV.Original end
+end)
+CreateSlider("FOV Value", 50, 120, 90, function(v) Config.FOV.Value = v end)
+CreateToggle("Fullbright", false, function(v)
+    Config.Fullbright.Enabled = v
     if v then
-        frame.Visible = true
-        frame.Size = UDim2.new(0, panelW, 0, 0)
-        TweenService:Create(frame,
-            TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            { Size = UDim2.new(0, panelW, 0, targetH) }):Play()
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
     else
-        local t = TweenService:Create(frame,
-            TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-            { Size = UDim2.new(0, panelW, 0, 0) })
-        t:Play()
-        t.Completed:Connect(function() if not PVP.UI.open then frame.Visible = false end end)
-    end
-    toggleBtn.Text = v and "▼" or "▲"
-end
-
-toggleBtn.MouseButton1Click:Connect(function() setOpen(not PVP.UI.open) end)
-closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
-
--- toggle button drag
-local tbDrag, tbStart, tbPos = false, nil, nil
-toggleBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        tbDrag = true; tbStart = input.Position; tbPos = toggleBtn.Position
+        Lighting.Ambient = Color3.fromRGB(70, 70, 70)
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        Lighting.Brightness = 1
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = true
     end
 end)
-UIS.InputChanged:Connect(function(input)
-    if not tbDrag then return end
-    if input.UserInputType == Enum.UserInputType.MouseMovement
-        or input.UserInputType == Enum.UserInputType.Touch then
-        local d = input.Position - tbStart
-        if d.Magnitude > 6 then
-            toggleBtn.Position = UDim2.new(
-                tbPos.X.Scale, tbPos.X.Offset + d.X,
-                tbPos.Y.Scale, tbPos.Y.Offset + d.Y)
+
+-- Collapse logic
+local collapsed = false
+ToggleBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    Scroll.Visible = not collapsed
+    Main.Size = collapsed and UDim2.new(0, 280, 0, 36) or UDim2.new(0, 280, 0, 420)
+    ToggleBtn.Text = collapsed and "+" or "—"
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- AIMBOT
+-- ═══════════════════════════════════════════════════════════════
+local function getAimPart(character)
+    if not character then return nil end
+    local part = character:FindFirstChild(Config.Aimbot.AimPart)
+    if part then return part end
+    return character:FindFirstChild("Head")
+        or character:FindFirstChild("UpperTorso")
+        or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function isVisible(part)
+    if not Config.Aimbot.WallCheck then return true end
+    local origin = Camera.CFrame.Position
+    local direction = (part.Position - origin)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = { LocalPlayer.Character, part.Parent }
+    local result = workspace:Raycast(origin, direction, rayParams)
+    return result == nil or result.Instance:IsDescendantOf(part.Parent)
+end
+
+local function getClosestTarget()
+    local closest = nil
+    local shortest = Config.Aimbot.FOV
+    local center = Camera.ViewportSize / 2
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if Config.Aimbot.TeamCheck and player.Team == LocalPlayer.Team then continue end
+
+        local char = player.Character
+        if not char then continue end
+
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+
+        local part = getAimPart(char)
+        if not part then continue end
+        if not isVisible(part) then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        if dist < shortest then
+            shortest = dist
+            closest = part
+        end
+    end
+
+    return closest
+end
+
+-- FOV Circle
+local function createFOVCircle()
+    if FOVCircle then FOVCircle:Remove() end
+    local drawing = Drawing.new("Circle")
+    drawing.Thickness = 1.5
+    drawing.Color = Color3.fromRGB(220, 60, 120)
+    drawing.Filled = false
+    drawing.Transparency = 0.7
+    FOVCircle = drawing
+end
+
+if Drawing then
+    createFOVCircle()
+end
+
+-- Aimbot render loop
+Connections.Aimbot = RunService.RenderStepped:Connect(function()
+    -- FOV circle
+    if FOVCircle then
+        FOVCircle.Visible = Config.Aimbot.ShowFOV and Config.Aimbot.Enabled
+        if Config.Aimbot.ShowFOV and Config.Aimbot.Enabled then
+            FOVCircle.Position = Camera.ViewportSize / 2
+            FOVCircle.Radius = Config.Aimbot.FOV
+        end
+    end
+
+    -- Aim
+    if not Config.Aimbot.Enabled then return end
+    if not HoldingAim then return end
+
+    local target = getClosestTarget()
+    if not target then return end
+
+    local targetPos = target.Position
+    local currentCF = Camera.CFrame
+    local goal = CFrame.new(currentCF.Position, targetPos)
+    Camera.CFrame = currentCF:Lerp(goal, 1 - Config.Aimbot.Smoothness)
+end)
+
+-- Aim input
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Config.Aimbot.Key then
+        HoldingAim = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Config.Aimbot.Key then
+        HoldingAim = false
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- ESP
+-- ═══════════════════════════════════════════════════════════════
+local function createESP(player)
+    if ESPObjects[player] then return end
+
+    local box = Drawing.new("Square")
+    box.Thickness = 1
+    box.Color = Color3.fromRGB(220, 60, 120)
+    box.Filled = false
+    box.Transparency = 0.8
+    box.Visible = false
+
+    local nameTag = Drawing.new("Text")
+    nameTag.Size = 14
+    nameTag.Center = true
+    nameTag.Outline = true
+    nameTag.Color = Color3.fromRGB(255, 255, 255)
+    nameTag.Visible = false
+
+    local distTag = Drawing.new("Text")
+    distTag.Size = 12
+    distTag.Center = true
+    distTag.Outline = true
+    distTag.Color = Color3.fromRGB(180, 180, 180)
+    distTag.Visible = false
+
+    local healthBar = Drawing.new("Square")
+    healthBar.Thickness = 1
+    healthBar.Color = Color3.fromRGB(50, 255, 50)
+    healthBar.Filled = true
+    healthBar.Transparency = 0.9
+    healthBar.Visible = false
+
+    local tracer = Drawing.new("Line")
+    tracer.Thickness = 1
+    tracer.Color = Color3.fromRGB(220, 60, 120)
+    tracer.Transparency = 0.7
+    tracer.Visible = false
+
+    ESPObjects[player] = {
+        Box = box,
+        Name = nameTag,
+        Dist = distTag,
+        Health = healthBar,
+        Tracer = tracer,
+    }
+end
+
+local function removeESP(player)
+    local objs = ESPObjects[player]
+    if not objs then return end
+    for _, obj in pairs(objs) do
+        pcall(function() obj:Remove() end)
+    end
+    ESPObjects[player] = nil
+end
+
+-- ESP update loop
+Connections.ESP = RunService.RenderStepped:Connect(function()
+    if not Config.ESP.Enabled then
+        for _, objs in pairs(ESPObjects) do
+            for _, obj in pairs(objs) do
+                pcall(function() obj.Visible = false end)
+            end
+        end
+        return
+    end
+
+    local center = Camera.ViewportSize / 2
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if Config.Aimbot.TeamCheck and player.Team == LocalPlayer.Team then
+            if ESPObjects[player] then
+                for _, obj in pairs(ESPObjects[player]) do
+                    pcall(function() obj.Visible = false end)
+                end
+            end
+            continue
+        end
+
+        local char = player.Character
+        if not char then
+            if ESPObjects[player] then
+                for _, obj in pairs(ESPObjects[player]) do
+                    pcall(function() obj.Visible = false end)
+                end
+            end
+            continue
+        end
+
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local head = char:FindFirstChild("Head")
+        if not hum or not hrp or not head or hum.Health <= 0 then
+            if ESPObjects[player] then
+                for _, obj in pairs(ESPObjects[player]) do
+                    pcall(function() obj.Visible = false end)
+                end
+            end
+            continue
+        end
+
+        if not ESPObjects[player] then
+            createESP(player)
+        end
+
+        local objs = ESPObjects[player]
+        local rootPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+        local headPos = Camera:WorldToViewportPoint(head.Position)
+
+        if not onScreen then
+            for _, obj in pairs(objs) do
+                pcall(function() obj.Visible = false end)
+            end
+            continue
+        end
+
+        -- Box dimensions
+        local height = math.abs(headPos.Y - rootPos.Y) + 12
+        local width = height * 0.55
+        local boxX = rootPos.X - width / 2
+        local boxY = headPos.Y - 6
+
+        -- Box
+        objs.Box.Visible = Config.ESP.Box
+        if Config.ESP.Box then
+            objs.Box.Size = Vector2.new(width, height)
+            objs.Box.Position = Vector2.new(boxX, boxY)
+        end
+
+        -- Name
+        objs.Name.Visible = Config.ESP.Name
+        if Config.ESP.Name then
+            objs.Name.Text = player.Name
+            objs.Name.Position = Vector2.new(rootPos.X, boxY - 16)
+        end
+
+        -- Distance
+        local distance = (LocalPlayer.Character
+            and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            and (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude)
+            or 0
+        objs.Dist.Visible = Config.ESP.Distance
+        if Config.ESP.Distance then
+            objs.Dist.Text = string.format("%d studs", math.floor(distance))
+            objs.Dist.Position = Vector2.new(rootPos.X, boxY + height + 2)
+        end
+
+        -- Health bar
+        objs.Health.Visible = Config.ESP.Health
+        if Config.ESP.Health then
+            local hpRatio = hum.Health / hum.MaxHealth
+            local barH = height * hpRatio
+            objs.Health.Size = Vector2.new(2, barH)
+            objs.Health.Position = Vector2.new(boxX - 5, boxY + height - barH)
+            objs.Health.Color = hpRatio > 0.5 and Color3.fromRGB(50, 255, 50)
+                or hpRatio > 0.25 and Color3.fromRGB(255, 255, 50)
+                or Color3.fromRGB(255, 50, 50)
+        end
+
+        -- Tracer
+        objs.Tracer.Visible = Config.ESP.Tracer
+        if Config.ESP.Tracer then
+            objs.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+            objs.Tracer.To = Vector2.new(rootPos.X, rootPos.Y)
         end
     end
 end)
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then tbDrag = false end
+
+-- ═══════════════════════════════════════════════════════════════
+-- MOVEMENT
+-- ═══════════════════════════════════════════════════════════════
+Connections.Speed = RunService.Heartbeat:Connect(function()
+    if not Config.Speed.Enabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = Config.Speed.Value
+    end
 end)
 
--- FOV circle visibility
-RunService.RenderStepped:Connect(function()
-    fovCircle.Visible = PVP.Config.aimbot and PVP.UI.open
+Connections.Noclip = RunService.Stepped:Connect(function()
+    if not Config.Noclip.Enabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            part.CanCollide = false
+        end
+    end
 end)
 
-print("[PVP] v6 ready — slider fixed, toggle sync, on/off beneran")
+-- Infinite Jump
+UserInputService.JumpRequest:Connect(function()
+    if not Config.InfiniteJump.Enabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end)
+
+-- FOV Changer
+Connections.FOV = RunService.RenderStepped:Connect(function()
+    if Config.FOV.Enabled then
+        Camera.FieldOfView = Config.FOV.Value
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- PLAYER CLEANUP
+-- ═══════════════════════════════════════════════════════════════
+Players.PlayerRemoving:Connect(function(player)
+    removeESP(player)
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- GUI TOGGLE (RightShift)
+-- ═══════════════════════════════════════════════════════════════
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        Main.Visible = not Main.Visible
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- CLEANUP ON REJOIN
+-- ═══════════════════════════════════════════════════════════════
+LocalPlayer.OnTeleport:Connect(function()
+    for _, conn in pairs(Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    for player, _ in pairs(ESPObjects) do
+        removeESP(player)
+    end
+    if FOVCircle then FOVCircle:Remove() end
+end)
+
+print("[DeltaPvP] ollie loaded — RightShift to toggle")
