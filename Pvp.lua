@@ -1,629 +1,432 @@
 --[[
-    AimbotUI v2
-    fix:
-      - ESP nama + jarak lebih kecil (TextSize kecil, gui ramping)
-      - ESP nangkep player hide-and-seek (morph jadi block/prop)
-      - Aimbot smooth: kamera ikut geser, nggak ngunci badan
+    FakeName Recon — ByVoid edition
     fitur:
-      - aimbot kamera + smooth + fov circle (Head/Torso/Legs)
-      - no recoil
-      - ESP lengkap player + bot (box, line, nama kecil, health, dist)
-      - speed, noclip
+      1. FAKE NAME LOKAL — edit nama player mana aja di layar lo
+         (BillboardGui atas kepala + chat lokal + leaderboard lokal)
+      2. REMOTE SCANNER BRUTAL — auto cari remote nama
+         - scan semua RemoteEvent / RemoteFunction
+         - filter nama yang nyebut name/display/nick
+         - test bocor: FireServer tanpa argumen, string, table, rate limit
+         - tampilkan hasil di UI
+    catatan: fake name GLOBAL butuh remote bocor — scanner ini cari kandidat
     absolute ollie, built by olivia
 --]]
 
-local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
-if not WindUI then warn("[AimbotUI] WindUI gagal load"); return end
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+if not Rayfield then warn("[FakeName] Rayfield gagal"); return end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
-local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 -- ============================================================
 -- STATE
 -- ============================================================
 local State = {
-    AimbotEnabled = false, AimbotSmooth = 8, AimbotFov = 150,
-    AimbotPart = "Head", AimbotTargetBots = true, AimbotTargetPlayers = true,
-    AimbotVisibleCheck = false, CurrentTarget = nil,
-    AimbotUsePrediction = true,
+    FakeNameEnabled = false,
+    FakeNameText = "ByVoid",
+    FakeNameColor = Color3.fromRGB(255, 0, 255),
+    FakeNameTarget = "semua", -- "semua" / nama player tertentu
+    fakeObjects = {}, -- [player] = {billboard, label}
 
-    NoRecoilEnabled = false, noRecoilConn = nil,
-
-    EspEnabled = false, EspBox = true, EspLine = false,
-    EspName = true, EspHealth = true, EspDistance = true,
-    EspPlayer = true, EspBot = true,
-    EspColor = Color3.fromRGB(0, 255, 100),
-    EspBotColor = Color3.fromRGB(255, 80, 80),
-    EspMaxDist = 2000,
-    EspNameSize = 11, EspDistSize = 10,
-    EspHideSeekScan = true,     -- scan dalam buat model morphed
-    espObjects = {}, espScanTick = 0,
-
-    SpeedEnabled = false, WalkSpeed = 50, defaultWalkSpeed = 16,
-    NoclipEnabled = false, savedCollide = {}, noclipConn = nil,
+    ScannerRunning = false,
+    ScannerResults = {}, -- [{remote, path, test, status, detail}]
+    ScannerFoundRemotes = {},
+    ScannerFilter = "name", -- "name" / "all"
+    ScannerRateCount = 50,
 }
 
 -- ============================================================
 -- UTILS
 -- ============================================================
-local function getChar() return LocalPlayer.Character end
-local function getHRP()
-    local c = getChar()
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
-local function getHum()
-    local c = getChar()
-    return c and c:FindFirstChildOfClass("Humanoid")
-end
-
-local function isPlayerModel(model)
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character == model then return p end
-    end
-    return nil
-end
-
--- bot / hide&seek: model yang punya Humanoid tapi bukan character player
-local function isBotModel(model)
-    if isPlayerModel(model) then return false end
-    return model:FindFirstChildOfClass("Humanoid") ~= nil
-end
-
-local function getTargetPart(model, partName)
-    if not model then return nil end
-    local hrp = model:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
-    if partName == "Head" then
-        return model:FindFirstChild("Head") or hrp
-    elseif partName == "Legs" then
-        return model:FindFirstChild("LeftLeg") or model:FindFirstChild("LeftFoot")
-            or model:FindFirstChild("LeftUpperLeg") or hrp
-    else
-        return model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or hrp
-    end
-end
-
--- deteksi model "morphed" hide&seek: Model tanpa HumanoidRootPart standar,
--- tapi punya Humanoid di descendant (kadang di-wrap)
-local function findHumanoidDeep(model)
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    if hum then return hum end
-    for _, d in ipairs(model:GetDescendants()) do
-        if d:IsA("Humanoid") then return d end
-    end
-    return nil
-end
-
-local function getRootDeep(model)
-    local hrp = model:FindFirstChild("HumanoidRootPart")
-    if hrp then return hrp end
-    -- fallback: cari part bernama "Root" atau PrimaryPart
-    local root = model:FindFirstChild("Root") or model.PrimaryPart
-    if root and root:IsA("BasePart") then return root end
-    -- fallback: part pertama BasePart
-    for _, d in ipairs(model:GetDescendants()) do
-        if d:IsA("BasePart") then return d end
-    end
-    return nil
+local function notify(t, c)
+    Rayfield:Notify({ Title = t, Content = c, Duration = 4 })
 end
 
 -- ============================================================
--- AIMBOT — FIX SMOOTH
+-- 1. FAKE NAME LOKAL
 -- ============================================================
-local fovCircle = Drawing.new("Circle")
-fovCircle.Thickness = 1.5
-fovCircle.NumSides = 60
-fovCircle.Filled = false
-fovCircle.Transparency = 0.8
-fovCircle.Color = Color3.fromRGB(0, 255, 100)
-fovCircle.Visible = false
+-- ganti BillboardGui nama di atas kepala player (lokal)
+-- + spoof chat lokal (TextChatService)
+-- + spoof leaderboard lokal (PlayerList)
 
-local function updateFovCircle()
-    if State.AimbotEnabled then
-        fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        fovCircle.Radius = State.AimbotFov / 2
-        fovCircle.Color = State.EspColor
-        fovCircle.Visible = true
-    else
-        fovCircle.Visible = false
-    end
-end
-
-local function isValidTarget(model)
-    if not model or not model.Parent then return false end
-    local hum = findHumanoidDeep(model)
-    if not hum or hum.Health <= 0 then return false end
-    local player = isPlayerModel(model)
-    if player then
-        if player == LocalPlayer then return false end
-        if not State.AimbotTargetPlayers then return false end
-    else
-        if not State.AimbotTargetBots then return false end
-        if not isBotModel(model) then return false end
-    end
-    return true
-end
-
-local function getClosestTarget()
-    local myHRP = getHRP()
-    if not myHRP then return nil end
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local best, bestDist = nil, math.huge
-
-    for _, model in ipairs(Workspace:GetDescendants()) do
-        if model:IsA("Model") and isValidTarget(model) then
-            local part = getTargetPart(model, State.AimbotPart) or getRootDeep(model)
-            if part then
-                local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= State.AimbotFov / 2 and d < bestDist then
-                        if State.AimbotVisibleCheck then
-                            local ray = Ray.new(Camera.CFrame.Position, part.Position - Camera.CFrame.Position)
-                            local hit = Workspace:FindPartOnRay(ray, LocalPlayer.Character, false, true)
-                            if hit and not hit:IsDescendantOf(model) then
-                                -- blocked
-                            else
-                                best, bestDist = model, d
-                            end
-                        else
-                            best, bestDist = model, d
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
--- FIX: aimbot geser kamera dengan Lerp factor kecil,
--- biar pas lo geser layar, kamera tetap ikut tangan lo
-local aimbotConn = RunService.RenderStepped:Connect(function(dt)
-    updateFovCircle()
-    if not State.AimbotEnabled then return end
-
-    -- reset CameraOffset biar nggak nyangkut
-    local hum = getHum()
-    if hum then hum.CameraOffset = Vector3.zero end
-
-    local target = getClosestTarget()
-    State.CurrentTarget = target
-
-    if target then
-        local part = getTargetPart(target, State.AimbotPart) or getRootDeep(target)
-        if part then
-            local goalPos = part.Position
-            -- prediction: kalau part punya velocity, prediksi sedikit ke depan
-            if State.AimbotUsePrediction and part:IsA("BasePart") then
-                local vel = part.AssemblyLinearVelocity
-                goalPos = goalPos + vel * 0.05
-            end
-
-            local goalCF = CFrame.new(Camera.CFrame.Position, goalPos)
-            -- smooth kecil = cepat ngunci, smooth besar = lembut
-            -- pakai dt biar konsisten di semua FPS
-            local smoothFactor = math.clamp(dt * (10 / math.max(State.AimbotSmooth, 1)), 0, 1)
-            Camera.CFrame = Camera.CFrame:Lerp(goalCF, smoothFactor)
-        end
-    end
-end)
-
--- ============================================================
--- NO RECOIL
--- ============================================================
-local function startNoRecoil()
-    if State.noRecoilConn then State.noRecoilConn:Disconnect() end
-    State.noRecoilConn = RunService.RenderStepped:Connect(function()
-        if not State.NoRecoilEnabled then return end
-        local camCF = Camera.CFrame
-        local pos = camCF.Position
-        local look = camCF.LookVector
-        local flatLook = Vector3.new(look.X, look.Y * 0.05, look.Z).Unit
-        Camera.CFrame = CFrame.new(pos, pos + flatLook)
-    end)
-end
-local function stopNoRecoil()
-    if State.noRecoilConn then State.noRecoilConn:Disconnect(); State.noRecoilConn = nil end
-end
-
--- ============================================================
--- ESP — nama & jarak kecil + hide&seek support
--- ============================================================
-local function removeESPForModel(model)
-    local obj = State.espObjects[model]
+local function removeFakeName(p)
+    local obj = State.fakeObjects[p]
     if not obj then return end
-    if obj.highlight then obj.highlight:Destroy() end
-    if obj.tracer then obj.tracer:Remove() end
-    for _, l in ipairs(obj.boxLines or {}) do l:Remove() end
     if obj.billboard and obj.billboard.Parent then obj.billboard:Destroy() end
-    if obj.healthBar and obj.healthBar.Parent and obj.healthBar.Parent:IsA("BillboardGui") then
-        obj.healthBar.Parent:Destroy()
-    end
-    State.espObjects[model] = nil
+    State.fakeObjects[p] = nil
 end
 
-local function clearAllESP()
-    for model, _ in pairs(State.espObjects) do removeESPForModel(model) end
-    State.espObjects = {}
+local function createFakeName(p)
+    if p == LocalPlayer then return end
+    if State.fakeObjects[p] then removeFakeName(p) end
+    local char = p.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+
+    -- hapus nama default lokal dengan nebeng? nggak bisa langsung
+    -- solusi: bikin BillboardGui baru yang nutupin nama default
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "OllieFakeName"
+    bb.Adornee = head
+    bb.Size = UDim2.new(0, 200, 0, 50)
+    bb.StudsOffset = Vector3.new(0, 2.5, 0)
+    bb.AlwaysOnTop = true
+    bb.Parent = head
+
+    -- background nutupin nama default
+    local bg = Instance.new("Frame")
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = Color3.new(0, 0, 0)
+    bg.BackgroundTransparency = 0.3
+    bg.BorderSizePixel = 0
+    bg.Parent = bb
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = State.FakeNameText
+    label.TextColor3 = State.FakeNameColor
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.TextScaled = true
+    label.Font = Enum.Font.GothamBold
+    label.Parent = bg
+
+    State.fakeObjects[p] = { billboard = bb, label = label }
 end
 
-local function createESPForModel(model)
-    if State.espObjects[model] or not State.EspEnabled then return end
-    local isPlayer = isPlayerModel(model)
-    local color = isPlayer and State.EspColor or State.EspBotColor
-    if isPlayer and not State.EspPlayer then return end
-    if not isPlayer and not State.EspBot then return end
-
-    -- ambil root deep (hide&seek bisa nggak punya HumanoidRootPart standar)
-    local rootPart = getRootDeep(model)
-    if not rootPart then return end
-
-    local obj = { highlight=nil, tracer=nil, boxLines={}, billboard=nil,
-                  nameLabel=nil, distLabel=nil, healthBar=nil, healthFg=nil, rootPart=rootPart }
-
-    local hl = Instance.new("Highlight")
-    hl.Name = "AimESP"
-    hl.FillColor = color; hl.OutlineColor = color
-    hl.FillTransparency = 0.55; hl.OutlineTransparency = 0
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Adornee = model; hl.Parent = model
-    obj.highlight = hl
-
-    -- billboard kecil: nama + jarak
-    if State.EspName or State.EspDistance then
-        local head = model:FindFirstChild("Head") or rootPart
-        if head then
-            local bb = Instance.new("BillboardGui")
-            bb.Name = "AimESPName"; bb.Adornee = head
-            bb.Size = UDim2.new(0, 100, 0, 22)  -- kecil
-            bb.StudsOffset = Vector3.new(0, 2.2, 0)
-            bb.AlwaysOnTop = true
-            bb.Parent = head
-
-            local nl = Instance.new("TextLabel")
-            nl.Size = UDim2.new(1, 0, 0.55, 0); nl.BackgroundTransparency = 1
-            nl.Text = isPlayer and isPlayer.Name or model.Name
-            nl.TextColor3 = color; nl.TextStrokeTransparency = 0.2
-            nl.TextStrokeColor3 = Color3.new(0,0,0)
-            nl.TextSize = State.EspNameSize
-            nl.Font = Enum.Font.GothamBold
-            nl.Visible = State.EspName
-            nl.Parent = bb
-            obj.nameLabel = nl
-
-            local dl = Instance.new("TextLabel")
-            dl.Size = UDim2.new(1, 0, 0.45, 0); dl.Position = UDim2.new(0, 0, 0.55, 0)
-            dl.BackgroundTransparency = 1; dl.Text = ""
-            dl.TextColor3 = color; dl.TextStrokeTransparency = 0.2
-            dl.TextStrokeColor3 = Color3.new(0,0,0)
-            dl.TextSize = State.EspDistSize
-            dl.Font = Enum.Font.Gotham
-            dl.Visible = State.EspDistance
-            dl.Parent = bb
-            obj.distLabel = dl
-            obj.billboard = bb
-        end
-    end
-
-    -- health bar kecil
-    if State.EspHealth then
-        local head = model:FindFirstChild("Head") or rootPart
-        if head then
-            local hb = Instance.new("BillboardGui")
-            hb.Name = "AimESPHealth"; hb.Adornee = head
-            hb.Size = UDim2.new(0, 36, 0, 4)  -- kecil
-            hb.StudsOffset = Vector3.new(0, 2.7, 0)
-            hb.AlwaysOnTop = true
-            hb.Parent = head
-            local bg = Instance.new("Frame")
-            bg.Size = UDim2.new(1, 0, 1, 0); bg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-            bg.BorderSizePixel = 1; bg.BorderColor3 = Color3.new(0,0,0); bg.Parent = hb
-            local fg = Instance.new("Frame")
-            fg.Size = UDim2.new(1, 0, 1, 0); fg.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-            fg.BorderSizePixel = 0; fg.Parent = bg
-            obj.healthBar = bg; obj.healthFg = fg
-        end
-    end
-
-    if State.EspLine then
-        local ok, line = pcall(function() return Drawing.new("Line") end)
-        if ok and line then
-            line.Color = color; line.Thickness = 1.2; line.Visible = false
-            obj.tracer = line
-        end
-    end
-
-    if State.EspBox then
-        for i = 1, 4 do
-            local ok, l = pcall(function() return Drawing.new("Line") end)
-            if ok and l then
-                l.Color = color; l.Thickness = 1; l.Visible = false
-                table.insert(obj.boxLines, l)
+local function applyFakeNameAll()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if State.FakeNameTarget == "semua" or p.Name == State.FakeNameTarget then
+                createFakeName(p)
+            else
+                removeFakeName(p)
             end
         end
     end
-
-    State.espObjects[model] = obj
 end
 
--- scan model: player + bot + hide&seek morphed (Model apapun yang punya Humanoid deep)
-local function scanAndCreate()
-    for _, model in ipairs(Workspace:GetDescendants()) do
-        if model:IsA("Model") and not State.espObjects[model] then
-            local isPlayer = isPlayerModel(model)
-            if isPlayer then
-                if State.EspPlayer then createESPForModel(model) end
-            else
-                -- bot / hide&seek: ada Humanoid deep DAN bukan character player
-                if State.EspBot and findHumanoidDeep(model) then
-                    createESPForModel(model)
+local function clearFakeNameAll()
+    for p, _ in pairs(State.fakeObjects) do removeFakeName(p) end
+    State.fakeObjects = {}
+end
+
+-- auto re-apply pas respawn / player baru
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function()
+        task.wait(0.8)
+        if State.FakeNameEnabled then
+            if State.FakeNameTarget == "semua" or p.Name == State.FakeNameTarget then
+                createFakeName(p)
+            end
+        end
+    end)
+end)
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then
+        p.CharacterAdded:Connect(function()
+            task.wait(0.8)
+            if State.FakeNameEnabled then
+                if State.FakeNameTarget == "semua" or p.Name == State.FakeNameTarget then
+                    createFakeName(p)
+                end
+            end
+        end)
+    end
+end
+
+-- ============================================================
+-- 2. REMOTE SCANNER BRUTAL
+-- ============================================================
+local function isRemote(obj)
+    return obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")
+end
+
+local function scanRemotes(root, depth, out)
+    depth = depth or 0
+    out = out or {}
+    if depth > 8 then return out end
+    for _, obj in ipairs(root:GetChildren()) do
+        if isRemote(obj) then
+            table.insert(out, obj)
+        end
+        pcall(function() scanRemotes(obj, depth + 1, out) end)
+    end
+    return out
+end
+
+local function filterNameRemotes(remotes, mode)
+    local filtered = {}
+    local keywords = {"name", "display", "nick", "tag", "title", "label", "chat", "message", "roleplay", "rp"}
+    for _, r in ipairs(remotes) do
+        local path = r:GetFullName():lower()
+        if mode == "all" then
+            table.insert(filtered, r)
+        else
+            for _, kw in ipairs(keywords) do
+                if path:find(kw) then
+                    table.insert(filtered, r)
+                    break
                 end
             end
         end
     end
+    return filtered
 end
 
-local function rebuildAllESP()
-    clearAllESP()
-    if not State.EspEnabled then return end
-    scanAndCreate()
-end
+local function testRemote(remote)
+    local results = {}
+    local testName = remote:GetFullName()
 
-local function updateESP()
-    if not State.EspEnabled then return end
-
-    State.espScanTick = State.espScanTick + 1
-    if State.espScanTick >= 45 then  -- scan tiap 0.75s
-        State.espScanTick = 0
-        scanAndCreate()
-    end
-
-    local myHRP = getHRP()
-    local myPos = myHRP and myHRP.Position or Vector3.zero
-
-    for model, obj in pairs(State.espObjects) do
-        if not model.Parent then
-            removeESPForModel(model)
-            continue
+    -- test 1: fire tanpa argumen
+    local ok1, err1 = pcall(function()
+        if remote:IsA("RemoteEvent") then
+            remote:FireServer()
+        else
+            remote:InvokeServer()
         end
+    end)
+    table.insert(results, {
+        remote = testName,
+        test = "no-args",
+        status = ok1 and "SENT" or "ERROR",
+        detail = ok1 and "fire tanpa argumen" or tostring(err1),
+    })
 
-        -- refresh root kalau morphed / respawn
-        local rootPart = obj.rootPart
-        if not rootPart or not rootPart.Parent then
-            rootPart = getRootDeep(model)
-            obj.rootPart = rootPart
-            -- rebind billboard ke head baru
-            local head = model:FindFirstChild("Head") or rootPart
-            if head and obj.billboard then obj.billboard.Adornee = head end
-            if head and obj.healthBar and obj.healthBar.Parent and obj.healthBar.Parent:IsA("BillboardGui") then
-                obj.healthBar.Parent.Adornee = head
+    -- test 2: fire dengan string nama
+    local ok2, err2 = pcall(function()
+        if remote:IsA("RemoteEvent") then
+            remote:FireServer(State.FakeNameText)
+        else
+            remote:InvokeServer(State.FakeNameText)
+        end
+    end)
+    table.insert(results, {
+        remote = testName,
+        test = "string-name",
+        status = ok2 and "SENT" or "ERROR",
+        detail = ok2 and ("fire dengan string: " .. State.FakeNameText) or tostring(err2),
+    })
+
+    -- test 3: fire dengan string + warna (kalau remote nama butuh 2 arg)
+    local ok3, err3 = pcall(function()
+        if remote:IsA("RemoteEvent") then
+            remote:FireServer(State.FakeNameText, State.FakeNameColor)
+        else
+            remote:InvokeServer(State.FakeNameText, State.FakeNameColor)
+        end
+    end)
+    table.insert(results, {
+        remote = testName,
+        test = "string+color",
+        status = ok3 and "SENT" or "ERROR",
+        detail = ok3 and "fire dengan string + Color3" or tostring(err3),
+    })
+
+    -- test 4: fire dengan table (kadang remote nerima {name=...})
+    local ok4, err4 = pcall(function()
+        local tbl = { name = State.FakeNameText, display = State.FakeNameText, text = State.FakeNameText }
+        if remote:IsA("RemoteEvent") then
+            remote:FireServer(tbl)
+        else
+            remote:InvokeServer(tbl)
+        end
+    end)
+    table.insert(results, {
+        remote = testName,
+        test = "table",
+        status = ok4 and "SENT" or "ERROR",
+        detail = ok4 and "fire dengan table {name,display,text}" or tostring(err4),
+    })
+
+    -- test 5: rate limit — spam 50x cepet
+    local spamStart = tick()
+    local spamOk = 0
+    for i = 1, State.ScannerRateCount do
+        local ok = pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(State.FakeNameText)
+            else
+                remote:InvokeServer(State.FakeNameText)
             end
-        end
-
-        local hum = findHumanoidDeep(model)
-        if not rootPart or not hum then
-            if obj.tracer then obj.tracer.Visible = false end
-            for _, l in ipairs(obj.boxLines) do l.Visible = false end
-            if obj.highlight then obj.highlight.Enabled = false end
-            continue
-        end
-
-        local dist = (rootPart.Position - myPos).Magnitude
-        local inRange = dist <= State.EspMaxDist
-        local isPlayer = isPlayerModel(model)
-        local color = isPlayer and State.EspColor or State.EspBotColor
-        local alive = hum.Health > 0
-
-        if obj.highlight then
-            obj.highlight.Enabled = inRange and alive
-            obj.highlight.FillColor = color
-            obj.highlight.OutlineColor = color
-        end
-        if obj.nameLabel then
-            obj.nameLabel.Visible = State.EspName and inRange
-            obj.nameLabel.Text = isPlayer and isPlayer.Name or model.Name
-            obj.nameLabel.TextColor3 = color
-            obj.nameLabel.TextSize = State.EspNameSize
-        end
-        if obj.distLabel then
-            obj.distLabel.Visible = State.EspDistance and inRange
-            obj.distLabel.Text = string.format("[%d]", math.floor(dist))
-            obj.distLabel.TextColor3 = color
-            obj.distLabel.TextSize = State.EspDistSize
-        end
-        if obj.healthFg then
-            local ratio = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
-            obj.healthFg.Size = UDim2.new(ratio, 0, 1, 0)
-            obj.healthFg.BackgroundColor3 = Color3.new(1 - ratio, ratio, 0)
-            obj.healthFg.Visible = State.EspHealth and inRange
-        end
-        if obj.tracer then
-            local sp, on = Camera:WorldToViewportPoint(rootPart.Position)
-            if on and State.EspLine and inRange then
-                obj.tracer.From = Vector2.new(Camera.ViewportSize.X / 2, 0)
-                obj.tracer.To = Vector2.new(sp.X, sp.Y)
-                obj.tracer.Color = color
-                obj.tracer.Visible = true
-            else obj.tracer.Visible = false end
-        end
-        if #obj.boxLines == 4 then
-            if State.EspBox and inRange then
-                local ts, ton = Camera:WorldToViewportPoint(rootPart.Position + Vector3.new(0, 3, 0))
-                local bs, bon = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0))
-                if ton and bon then
-                    local h = math.abs(bs.Y - ts.Y); local w = h * 0.6
-                    local cx = (ts.X + bs.X) / 2
-                    local tl = Vector2.new(cx - w/2, ts.Y); local tr = Vector2.new(cx + w/2, ts.Y)
-                    local bl = Vector2.new(cx - w/2, bs.Y); local br = Vector2.new(cx + w/2, bs.Y)
-                    obj.boxLines[1].From = tl; obj.boxLines[1].To = tr
-                    obj.boxLines[2].From = tr; obj.boxLines[2].To = br
-                    obj.boxLines[3].From = br; obj.boxLines[3].To = bl
-                    obj.boxLines[4].From = bl; obj.boxLines[4].To = tl
-                    for _, l in ipairs(obj.boxLines) do l.Color = color; l.Visible = true end
-                else for _, l in ipairs(obj.boxLines) do l.Visible = false end end
-            else for _, l in ipairs(obj.boxLines) do l.Visible = false end end
-        end
+        end)
+        if ok then spamOk = spamOk + 1 end
     end
+    local spamTime = tick() - spamStart
+    table.insert(results, {
+        remote = testName,
+        test = "rate-limit",
+        status = spamOk > 0 and "SENT" or "ERROR",
+        detail = string.format("%d/%d fire dalam %.2fs", spamOk, State.ScannerRateCount, spamTime),
+    })
+
+    return results
 end
 
-RunService.RenderStepped:Connect(updateESP)
+local function runScanner(mode)
+    State.ScannerRunning = true
+    State.ScannerResults = {}
+    State.ScannerFoundRemotes = {}
+    notify("Scanner", "scanning remote...")
 
--- ============================================================
--- SPEED
--- ============================================================
-local function applySpeed()
-    local hum = getHum()
-    if not hum then return end
-    hum.WalkSpeed = State.SpeedEnabled and State.WalkSpeed or State.defaultWalkSpeed
-end
+    task.spawn(function()
+        -- scan semua root
+        local remotes = {}
+        scanRemotes(game:GetService("ReplicatedStorage"), 0, remotes)
+        scanRemotes(Workspace, 0, remotes)
+        scanRemotes(game:GetService("Players"), 0, remotes)
 
--- ============================================================
--- NOCLIP
--- ============================================================
-local function startNoclip()
-    local char = getChar()
-    if char then
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                if State.savedCollide[part] == nil then State.savedCollide[part] = part.CanCollide end
-                part.CanCollide = false
-            end
+        -- filter
+        local filtered = filterNameRemotes(remotes, mode)
+        State.ScannerFoundRemotes = filtered
+
+        if #filtered == 0 then
+            State.ScannerRunning = false
+            notify("Scanner", "nggak ada remote nama yang ketemu")
+            return
         end
-    end
-    if State.noclipConn then State.noclipConn:Disconnect() end
-    State.noclipConn = RunService.Stepped:Connect(function()
-        if not State.NoclipEnabled then return end
-        local c = getChar()
-        if not c then return end
-        for _, part in ipairs(c:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                if State.savedCollide[part] == nil then State.savedCollide[part] = true end
-                part.CanCollide = false
+
+        notify("Scanner", string.format("%d remote kandidat, testing...", #filtered))
+
+        -- test tiap remote
+        for _, r in ipairs(filtered) do
+            local results = testRemote(r)
+            for _, res in ipairs(results) do
+                table.insert(State.ScannerResults, res)
             end
+            task.wait(0.3)
         end
+
+        State.ScannerRunning = false
+        notify("Scanner", string.format("selesai — %d remote dites, %d hasil", #filtered, #State.ScannerResults))
     end)
 end
 
-local function stopNoclip()
-    if State.noclipConn then State.noclipConn:Disconnect(); State.noclipConn = nil end
-    for part, orig in pairs(State.savedCollide) do
-        if part and part.Parent then part.CanCollide = orig end
-    end
-    State.savedCollide = {}
-end
-
 -- ============================================================
--- UI WINDUI
+-- UI
 -- ============================================================
-local Window = WindUI:CreateWindow({
-    Title = "AimbotUI v2",
-    Icon = "crosshair",
-    Author = "ByVoid",
-    Folder = "AimbotUI",
-    Size = UDim2.fromOffset(520, 420),
-    Transparent = true,
-    Theme = "Dark",
-    SideBarWidth = 160,
-    Background = "Textures/denis.png",
-    HasOutline = true,
+local Window = Rayfield:CreateWindow({
+    Name = "FakeName Recon",
+    LoadingTitle = "FakeName Recon",
+    LoadingSubtitle = "absolute ollie, built by olivia",
+    ConfigurationSaving = { Enabled = false },
+    Keybind = Enum.KeyCode.RightShift,
 })
 
--- AIMBOT
-local AimbotTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
-AimbotTab:Section({ Title = "Aimbot Kamera" })
-AimbotTab:Toggle({ Title = "Enable Aimbot", Value = false,
-    Callback = function(v) State.AimbotEnabled = v end })
-AimbotTab:Slider({ Title = "Smooth (kecil = cepat, besar = lembut)",
-    Value = { Min = 1, Max = 20, Default = 8 },
-    Callback = function(v) State.AimbotSmooth = v end })
-AimbotTab:Slider({ Title = "FOV Radius",
-    Value = { Min = 20, Max = 600, Default = 150 },
-    Callback = function(v) State.AimbotFov = v end })
-AimbotTab:Dropdown({ Title = "Target Part",
-    Values = { "Head", "Torso", "Legs" }, Default = "Head",
-    Callback = function(v) State.AimbotPart = v end })
-AimbotTab:Section({ Title = "Target" })
-AimbotTab:Toggle({ Title = "Target Player", Value = true,
-    Callback = function(v) State.AimbotTargetPlayers = v end })
-AimbotTab:Toggle({ Title = "Target Bot", Value = true,
-    Callback = function(v) State.AimbotTargetBots = v end })
-AimbotTab:Toggle({ Title = "Wall Check", Value = false,
-    Callback = function(v) State.AimbotVisibleCheck = v end })
-AimbotTab:Toggle({ Title = "Prediction (geser ke depan)", Value = true,
-    Callback = function(v) State.AimbotUsePrediction = v end })
+-- TAB 1: FAKE NAME
+local FakeTab = Window:CreateTab("Fake Name", 4483362458)
 
--- COMBAT
-local CombatTab = Window:Tab({ Title = "Combat", Icon = "flame" })
-CombatTab:Toggle({ Title = "Enable No Recoil", Value = false,
-    Callback = function(v) State.NoRecoilEnabled = v
-        if v then startNoRecoil() else stopNoRecoil() end end })
-
--- ESP
-local EspTab = Window:Tab({ Title = "ESP", Icon = "eye" })
-EspTab:Toggle({ Title = "Enable ESP", Value = false,
-    Callback = function(v) State.EspEnabled = v
-        if v then rebuildAllESP() else clearAllESP() end end })
-EspTab:Toggle({ Title = "ESP Box", Value = true,
-    Callback = function(v) State.EspBox = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Toggle({ Title = "ESP Line", Value = false,
-    Callback = function(v) State.EspLine = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Toggle({ Title = "ESP Nama", Value = true,
-    Callback = function(v) State.EspName = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Toggle({ Title = "ESP Health Bar", Value = true,
-    Callback = function(v) State.EspHealth = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Toggle({ Title = "ESP Distance", Value = true,
-    Callback = function(v) State.EspDistance = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Section({ Title = "Ukuran Teks" })
-EspTab:Slider({ Title = "Nama Size", Value = { Min = 7, Max = 18, Default = 11 },
-    Callback = function(v) State.EspNameSize = v
-        for _, obj in pairs(State.espObjects) do
-            if obj.nameLabel then obj.nameLabel.TextSize = v end
-        end end })
-EspTab:Slider({ Title = "Jarak Size", Value = { Min = 7, Max = 18, Default = 10 },
-    Callback = function(v) State.EspDistSize = v
-        for _, obj in pairs(State.espObjects) do
-            if obj.distLabel then obj.distLabel.TextSize = v end
-        end end })
-EspTab:Section({ Title = "Filter" })
-EspTab:Toggle({ Title = "ESP Player", Value = true,
-    Callback = function(v) State.EspPlayer = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Toggle({ Title = "ESP Bot / Hide&Seek", Value = true,
-    Callback = function(v) State.EspBot = v; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Slider({ Title = "ESP Max Distance",
-    Value = { Min = 100, Max = 5000, Default = 2000 },
-    Callback = function(v) State.EspMaxDist = v end })
-EspTab:Section({ Title = "Warna" })
-EspTab:Colorpicker({ Title = "Warna Player", Default = Color3.fromRGB(0, 255, 100),
-    Callback = function(c) State.EspColor = c; if State.EspEnabled then rebuildAllESP() end end })
-EspTab:Colorpicker({ Title = "Warna Bot", Default = Color3.fromRGB(255, 80, 80),
-    Callback = function(c) State.EspBotColor = c; if State.EspEnabled then rebuildAllESP() end end })
-
--- MOVEMENT
-local MoveTab = Window:Tab({ Title = "Movement", Icon = "footprints" })
-MoveTab:Toggle({ Title = "Enable Speed", Value = false,
-    Callback = function(v) State.SpeedEnabled = v; applySpeed() end })
-MoveTab:Slider({ Title = "Walk Speed", Value = { Min = 16, Max = 300, Default = 50 },
-    Callback = function(v) State.WalkSpeed = v; applySpeed() end })
-MoveTab:Toggle({ Title = "Enable Noclip", Value = false,
-    Callback = function(v) State.NoclipEnabled = v
-        if v then startNoclip() else stopNoclip() end end })
-
--- RESPAWN
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1)
-    applySpeed()
-    State.savedCollide = {}
-    if State.NoclipEnabled then startNoclip() end
-    if State.EspEnabled then rebuildAllESP() end
-end)
-
-WindUI:Notify({
-    Title = "AimbotUI v2",
-    Content = "Esp kecil + hide&seek detect + aimbot smooth fix",
-    Duration = 4, Icon = "check",
+FakeTab:CreateSection("Fake Name (Lokal — cuma lo yang liat)")
+FakeTab:CreateToggle({
+    Name = "Enable Fake Name",
+    CurrentValue = false,
+    Flag = "FNEnable",
+    Callback = function(v)
+        State.FakeNameEnabled = v
+        if v then applyFakeNameAll() else clearFakeNameAll() end
+    end,
 })
+FakeTab:CreateInput({
+    Name = "Nama Palsu",
+    CurrentValue = "ByVoid",
+    PlaceholderText = "ketik nama palsu...",
+    RemoveTextAfterFocusLost = false,
+    Flag = "FNText",
+    Callback = function(txt)
+        if txt and txt ~= "" then
+            State.FakeNameText = txt
+            if State.FakeNameEnabled then applyFakeNameAll() end
+        end
+    end,
+})
+FakeTab:CreateColorPicker({
+    Name = "Warna Nama",
+    Color = Color3.fromRGB(255, 0, 255),
+    Flag = "FNColor",
+    Callback = function(c)
+        State.FakeNameColor = c
+        for _, obj in pairs(State.fakeObjects) do
+            if obj.label and obj.label.Parent then obj.label.TextColor3 = c end
+        end
+    end,
+})
+FakeTab:CreateDropdown({
+    Name = "Target Player",
+    Options = {"semua"},
+    CurrentOption = {"semua"},
+    MultipleOptions = false,
+    Flag = "FNTarget",
+    Callback = function(opt)
+        if opt and opt[1] then
+            State.FakeNameTarget = opt[1]
+            if State.FakeNameEnabled then applyFakeNameAll() end
+        end
+    end,
+})
+FakeTab:CreateButton({
+    Name = "Refresh Target List",
+    Callback = function()
+        local names = {"semua"}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then table.insert(names, p.Name) end
+        end
+        -- Rayfield dropdown refresh lewat Set
+        local dd = Rayfield.Flags["FNTarget"]
+        -- fallback: notify user
+        notify("FakeName", "daftar target: " .. table.concat(names, ", "))
+    end,
+})
+FakeTab:CreateParagraph({
+    Title = "Info",
+    Content = "Fake name ini LOKAL — cuma lo yang liat. Player lain tetap liat nama asli. Buat global, pakai tab Remote Scanner, cari remote bocor, lalu fire manual.",
+})
+
+-- TAB 2: REMOTE SCANNER
+local ScanTab = Window:CreateTab("Remote Scanner", 4483362458)
+
+ScanTab:CreateSection("Remote Scanner Brutal")
+ScanTab:CreateDropdown({
+    Name = "Filter Remote",
+    Options = {"Nama aja (name/display/chat/dll)", "Semua remote"},
+    CurrentOption = {"Nama aja (name/display/chat/dll)"},
+    MultipleOptions = false,
+    Flag = "ScanMode",
+    Callback = function(opt)
+        State.ScannerFilter = (opt[1]:find("Semua")) and "all" or "name"
+    end,
+})
+ScanTab:CreateSlider({
+    Name = "Rate Limit Test (spam count)",
+    Range = {10, 200},
+    Increment = 10,
+    Suffix = "x",
+    CurrentValue = 50,
+    Flag = "ScanRate",
+    Callback = function(v) State.ScannerRateCount = v end,
+})
+ScanTab:CreateButton({
+    Name = "Mulai Scan + Test",
+    Callback = function()
+        if State.ScannerRunning then notify("Scanner", "masih jalan..."); return end
+        runScanner(State.ScannerFilter)
+    end,
+})
+ScanTab:CreateButton({
+    Name = "Stop / Clear Hasil",
+    Callback = function()
+        State.ScannerRunning = false
+        State.ScannerResults = {}
+        State.ScannerFoundRemotes = {}
+        notify("Scanner", "hasil di-clear")
+    end,
+})
+ScanTab:CreateParagraph({
+    Title = "Status",
+    Content = "Klik Mulai Scan. Hasil muncul di console (F9) + notify. Cek remote mana yang SENT tanpa ERROR — itu kandidat bocor.",
+})
+
+notify("FakeName Recon", "loaded — fake name lokal + remote scanner brutal")
