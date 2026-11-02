@@ -1,12 +1,16 @@
 --[[
     ByVoid — No system is safe
-    update: CHAMS DIHAPUS, AIMBOT masuk
-      - aimbot POV lock (kepala / badan / kaki)
-      - lingkaran FOV visual
+    update: AIMBOT BRUTAL
+      - lock paksa via BindToRenderStep (priority Camera + 1)
+      - sticky target (nggak ganti target mid-aim)
+      - prediction velocity (buat target gerak)
+      - snap penuh saat smooth = 0
+      - fallback scan buat char unparent
+      - target part: Head / Badan / Kaki
       - mode: selalu aktif / cuma pas nembak
-      - free move: gerak bebas tapi kamera tetap lock target
-      - smoothness slider
-    semua fitur lama UTUH kecuali chams:
+      - free move (WASD jalan, kamera lock)
+      - FOV circle visual
+    semua fitur lama UTUH:
       jump tahan, fly HP, speed, ESP brutal, noclip, wallhack glow,
       spinbot, god mode + map support tag, fullbright, low graphics,
       POV, tp
@@ -47,20 +51,26 @@ local State = {
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxConn = nil, lowGfxSaved = nil,
     -- AIMBOT
-    AimbotEnabled = false, AimbotTargetPart = "Head",
-    AimbotMode = "Selalu Aktif",  -- "Selalu Aktif" / "Cuma Pas Nembak"
-    AimbotFov = 120,              -- radius pixel lingkaran FOV
-    AimbotSmooth = 0.25,          -- 0 = snap, 1 = slow
+    AimbotEnabled = false,
+    AimbotTargetPart = "Head",
+    AimbotMode = "Selalu Aktif",
+    AimbotFov = 150,
+    AimbotSmooth = 0,
+    AimbotPredict = true,
+    AimbotPredictAmount = 0.12,
     AimbotFreeMove = false,
     AimbotShowFov = true,
     AimbotColor = Color3.fromRGB(255, 50, 50),
-    aimbotConn = nil, fovCircle = nil,
-    aimbotShooting = false, aimbotTarget = nil,
+    aimbotTarget = nil,
+    aimbotShooting = false,
+    fovCircle = nil,
     savedAutoRotate = nil,
+    -- tp
     SelectedPlayer = nil,
 }
 
 local GodSupportLabel = nil
+local AIMBOT_BIND = "ByVoidAimbotRender"
 
 -- ============================================================
 -- UTILS
@@ -629,11 +639,11 @@ local function runGodModeTest()
         if healedBack then score = score + 1 end
 
         local txt
-        if score >= 4 then txt = "SUPPORT PENUH (4/4) — god mode jalan di map ini"
-        elseif score == 3 then txt = "SUPPORT TINGGI (3/4) — god mode jalan, damage sesaat mungkin"
-        elseif score == 2 then txt = "SUPPORT PARSIAL (2/4) — health bisa bolong kalau server reset"
-        elseif score == 1 then txt = "SUPPORT RENDAH (1/4) — god mode lemah, server-authoritative"
-        else txt = "TIDAK SUPPORT (0/4) — game kunci health total" end
+        if score >= 4 then txt = "SUPPORT PENUH (4/4) — god mode jalan"
+        elseif score == 3 then txt = "SUPPORT TINGGI (3/4) — damage sesaat mungkin"
+        elseif score == 2 then txt = "SUPPORT PARSIAL (2/4) — bisa bolong kalau server reset"
+        elseif score == 1 then txt = "SUPPORT RENDAH (1/4) — server-authoritative"
+        else txt = "TIDAK SUPPORT (0/4) — game kunci health" end
         setGodSupportLabel(txt)
         State.godTestDone = true
         State.godTestResult = score
@@ -709,36 +719,25 @@ end)
 -- ============================================================
 local function saveLighting()
     State.fbSaved = {
-        Brightness = Lighting.Brightness,
-        Ambient = Lighting.Ambient,
-        OutdoorAmbient = Lighting.OutdoorAmbient,
-        GlobalShadows = Lighting.GlobalShadows,
-        FogEnd = Lighting.FogEnd,
-        FogStart = Lighting.FogStart,
-        ClockTime = Lighting.ClockTime,
-        ExposureCompensation = Lighting.ExposureCompensation,
+        Brightness = Lighting.Brightness, Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient, GlobalShadows = Lighting.GlobalShadows,
+        FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart,
+        ClockTime = Lighting.ClockTime, ExposureCompensation = Lighting.ExposureCompensation,
     }
 end
-
 local function applyFullbright()
     Lighting.Brightness = 2
     Lighting.Ambient = Color3.fromRGB(255, 255, 255)
     Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
     Lighting.GlobalShadows = false
-    Lighting.FogEnd = 1e6
-    Lighting.FogStart = 1e6
-    Lighting.ClockTime = 12
-    Lighting.ExposureCompensation = 0.5
+    Lighting.FogEnd = 1e6; Lighting.FogStart = 1e6
+    Lighting.ClockTime = 12; Lighting.ExposureCompensation = 0.5
 end
-
 local function restoreLighting()
     if not State.fbSaved then return end
-    for k, v in pairs(State.fbSaved) do
-        pcall(function() Lighting[k] = v end)
-    end
+    for k, v in pairs(State.fbSaved) do pcall(function() Lighting[k] = v end) end
     State.fbSaved = nil
 end
-
 local function startFullbright()
     if not State.fbSaved then saveLighting() end
     State.FullbrightEnabled = true
@@ -751,7 +750,6 @@ local function startFullbright()
         end
     end)
 end
-
 local function stopFullbright()
     State.FullbrightEnabled = false
     if State.fbConn then pcall(function() task.cancel(State.fbConn) end); State.fbConn = nil end
@@ -759,17 +757,12 @@ local function stopFullbright()
 end
 
 -- ============================================================
--- 5F. POV / FOV CHANGER
+-- 5F. POV
 -- ============================================================
 local function applyPov()
     if not Camera then return end
-    if State.PovEnabled then
-        Camera.FieldOfView = State.PovValue
-    else
-        Camera.FieldOfView = State.defaultFOV
-    end
+    Camera.FieldOfView = State.PovEnabled and State.PovValue or State.defaultFOV
 end
-
 Camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
     if State.PovEnabled and Camera.FieldOfView ~= State.PovValue then
         Camera.FieldOfView = State.PovValue
@@ -786,11 +779,9 @@ local function saveLowGfx()
         TerrainWaterWaveSpeed = Workspace.Terrain.WaterWaveSpeed,
         TerrainWaterReflectance = Workspace.Terrain.WaterReflectance,
         TerrainWaterTransparency = Workspace.Terrain.WaterTransparency,
-        GlobalShadows = Lighting.GlobalShadows,
-        LightingFogEnd = Lighting.FogEnd,
+        GlobalShadows = Lighting.GlobalShadows, LightingFogEnd = Lighting.FogEnd,
     }
 end
-
 local function applyLowGfx()
     pcall(function()
         Workspace.Terrain.Decoration = false
@@ -809,7 +800,6 @@ local function applyLowGfx()
         end
     end)
 end
-
 local function restoreLowGfx()
     if not State.lowGfxSaved then return end
     pcall(function()
@@ -830,7 +820,6 @@ local function restoreLowGfx()
     end)
     State.lowGfxSaved = nil
 end
-
 local function startLowGfx()
     if not State.lowGfxSaved then saveLowGfx() end
     State.LowGfxEnabled = true
@@ -843,7 +832,6 @@ local function startLowGfx()
         end
     end)
 end
-
 local function stopLowGfx()
     State.LowGfxEnabled = false
     if State.lowGfxConn then pcall(function() task.cancel(State.lowGfxConn) end); State.lowGfxConn = nil end
@@ -851,35 +839,78 @@ local function stopLowGfx()
 end
 
 -- ============================================================
--- 5H. AIMBOT — POV lock + FOV circle + free move
+-- 5H. AIMBOT BRUTAL — lock paksa
 -- ============================================================
 local function getTargetPart(char)
     if not char then return nil end
     if State.AimbotTargetPart == "Head" then
         return char:FindFirstChild("Head")
     elseif State.AimbotTargetPart == "Badan" then
-        return char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        return char:FindFirstChild("UpperTorso")
+            or char:FindFirstChild("Torso")
+            or char:FindFirstChild("HumanoidRootPart")
     elseif State.AimbotTargetPart == "Kaki" then
-        return char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot") or char:FindFirstChild("LeftLeg") or char:FindFirstChild("RightLeg")
+        return char:FindFirstChild("LeftFoot")
+            or char:FindFirstChild("RightFoot")
+            or char:FindFirstChild("LeftLeg")
+            or char:FindFirstChild("RightLeg")
     end
     return char:FindFirstChild("Head")
 end
 
--- cari target terdekat di dalam FOV circle (pixel)
-local function findTargetInFov()
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+local function getCharForTarget(p)
+    local char = p.Character
+    if char and char:FindFirstChildOfClass("Humanoid") then return char end
+    -- fallback scan
+    if State.EspFallbackScan then
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if d:IsA("Humanoid") and d.Parent and d.Parent.Name == p.Name then
+                return d.Parent
+            end
+        end
+    end
+    return nil
+end
+
+-- sticky target: kalau target lama masih di FOV & hidup, pakai itu
+local function findBestTarget()
+    local vp = Camera.ViewportSize
+    local center = Vector2.new(vp.X / 2, vp.Y / 2)
+
+    -- cek target lama dulu
+    if State.aimbotTarget and State.aimbotTarget.player then
+        local p = State.aimbotTarget.player
+        if p.Parent then
+            local char = getCharForTarget(p)
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local part = char and getTargetPart(char)
+            if part and hum and hum.Health > 0 then
+                local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+                if onScreen then
+                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if d <= State.AimbotFov then
+                        return { player = p, part = part }
+                    end
+                end
+            end
+        end
+        State.aimbotTarget = nil
+    end
+
+    -- scan baru
     local best, bestDist = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
-            local char = p.Character
-            local part = getTargetPart(char)
+            local char = getCharForTarget(p)
             local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local part = char and getTargetPart(char)
             if part and hum and hum.Health > 0 then
                 local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
                 if onScreen then
                     local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
                     if d <= State.AimbotFov and d < bestDist then
-                        bestDist = d; best = {player = p, part = part}
+                        bestDist = d
+                        best = { player = p, part = part }
                     end
                 end
             end
@@ -903,7 +934,7 @@ local function createFovCircle()
         circle.NumSides = 64
         circle.Color = State.AimbotColor
         circle.Filled = false
-        circle.Transparency = 0.8
+        circle.Transparency = 0.85
         circle.Visible = false
         State.fovCircle = circle
     end
@@ -927,67 +958,80 @@ local function aimbotShouldLock()
     return State.aimbotShooting
 end
 
-local function startAimbot()
-    if State.aimbotConn then State.aimbotConn:Disconnect() end
-    State.AimbotEnabled = true
-    createFovCircle()
+-- BindToRenderStep setelah Camera update — override kamera default
+local function aimbotRenderStep(dt)
+    updateFovCircle()
+    if not State.AimbotEnabled then return end
 
-    -- free move: matiin auto rotate biar badan nggak maksa muter
-    local hum = getHum()
-    if State.AimbotFreeMove and hum then
-        State.savedAutoRotate = hum.AutoRotate
-        hum.AutoRotate = false
+    if not aimbotShouldLock() then
+        State.aimbotTarget = nil
+        -- restore auto rotate pas nggak lock
+        local h = getHum()
+        if h and State.savedAutoRotate ~= nil then
+            h.AutoRotate = State.savedAutoRotate
+            State.savedAutoRotate = nil
+        end
+        return
     end
 
-    State.aimbotConn = RunService.RenderStepped:Connect(function(dt)
-        updateFovCircle()
-        if not State.AimbotEnabled then return end
+    local target = findBestTarget()
+    State.aimbotTarget = target
+    if not target or not target.part or not target.part.Parent then return end
 
-        local shouldLock = aimbotShouldLock()
-
-        if not shouldLock then
-            State.aimbotTarget = nil
-            -- restore auto rotate kalau nggak lock
-            local h = getHum()
-            if h and State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate end
-            return
-        end
-
-        local target = findTargetInFov()
-        State.aimbotTarget = target
-        if not target or not target.part or not target.part.Parent then return end
-
-        -- free move: AutoRotate off selama lock
-        local h = getHum()
-        if h then
-            if State.AimbotFreeMove then
-                if State.savedAutoRotate == nil then State.savedAutoRotate = h.AutoRotate end
-                h.AutoRotate = false
-            else
-                if State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate end
+    -- free move: AutoRotate off selama lock
+    local h = getHum()
+    if h then
+        if State.AimbotFreeMove then
+            if State.savedAutoRotate == nil then State.savedAutoRotate = h.AutoRotate end
+            h.AutoRotate = false
+        else
+            if State.savedAutoRotate ~= nil then
+                h.AutoRotate = State.savedAutoRotate
+                State.savedAutoRotate = nil
             end
         end
+    end
 
-        local camPos = Camera.CFrame.Position
-        local targetPos = target.part.Position
-        local desired = CFrame.lookAt(camPos, targetPos)
+    -- hitung posisi target + prediction
+    local camPos = Camera.CFrame.Position
+    local targetPos = target.part.Position
+    if State.AimbotPredict then
+        local vel = target.part.AssemblyLinearVelocity
+        targetPos = targetPos + vel * State.AimbotPredictAmount
+    end
 
-        -- smooth: lerp antar CFrame
+    local desired = CFrame.lookAt(camPos, targetPos)
+
+    -- alpha: 1 = snap penuh, kecil = smooth
+    if State.AimbotSmooth <= 0.01 then
+        Camera.CFrame = desired
+    else
         local alpha = math.clamp(1 - State.AimbotSmooth, 0.01, 1)
         Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
+    end
+end
+
+local function startAimbot()
+    State.AimbotEnabled = true
+    createFovCircle()
+    pcall(function()
+        RunService:UnbindFromRenderStep(AIMBOT_BIND)
     end)
+    RunService:BindToRenderStep(AIMBOT_BIND, Enum.RenderPriority.Camera.Value + 1, aimbotRenderStep)
 end
 
 local function stopAimbot()
     State.AimbotEnabled = false
     State.aimbotTarget = nil
-    if State.aimbotConn then State.aimbotConn:Disconnect(); State.aimbotConn = nil end
+    pcall(function()
+        RunService:UnbindFromRenderStep(AIMBOT_BIND)
+    end)
+    destroyFovCircle()
     local h = getHum()
     if h and State.savedAutoRotate ~= nil then
         h.AutoRotate = State.savedAutoRotate
+        State.savedAutoRotate = nil
     end
-    State.savedAutoRotate = nil
-    destroyFovCircle()
 end
 
 -- trigger nembak: mouse1 / touch kanan layar
@@ -1002,7 +1046,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
     if isShoot then State.aimbotShooting = true end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
@@ -1093,38 +1136,41 @@ MoveTab:CreateSlider({ Name = "Walk Speed", Range = {16, 300}, Increment = 1, Su
     CurrentValue = 50, Flag = "WalkSpeed",
     Callback = function(v) State.WalkSpeed = v; applySpeed() end })
 
--- AIMBOT TAB
+-- AIMBOT
 local AimTab = Window:CreateTab("Aimbot", 4483362458)
-AimTab:CreateSection("Aimbot POV Lock")
+AimTab:CreateSection("Aimbot Brutal Lock")
 AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aimbot",
     Callback = function(v) if v then startAimbot() else stopAimbot() end end })
 AimTab:CreateDropdown({
     Name = "Target Part", Options = {"Head", "Badan", "Kaki"},
     CurrentOption = {"Head"}, MultipleOptions = false, Flag = "AimPart",
-    Callback = function(opt)
-        if opt and opt[1] then State.AimbotTargetPart = opt[1] end
-    end,
+    Callback = function(opt) if opt and opt[1] then State.AimbotTargetPart = opt[1] end end,
 })
 AimTab:CreateDropdown({
     Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
     CurrentOption = {"Selalu Aktif"}, MultipleOptions = false, Flag = "AimMode",
-    Callback = function(opt)
-        if opt and opt[1] then State.AimbotMode = opt[1] end
-    end,
+    Callback = function(opt) if opt and opt[1] then State.AimbotMode = opt[1] end end,
 })
-AimTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 400}, Increment = 5, Suffix = "px",
-    CurrentValue = 120, Flag = "AimFov",
+AimTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 600}, Increment = 5, Suffix = "px",
+    CurrentValue = 150, Flag = "AimFov",
     Callback = function(v) State.AimbotFov = v end })
-AimTab:CreateSlider({ Name = "Smoothness", Range = {0, 0.95}, Increment = 0.05, Suffix = "",
-    CurrentValue = 0.25, Flag = "AimSmooth",
+AimTab:CreateSlider({ Name = "Smoothness (0 = snap penuh)", Range = {0, 0.95}, Increment = 0.05,
+    CurrentValue = 0, Flag = "AimSmooth",
     Callback = function(v) State.AimbotSmooth = v end })
+AimTab:CreateToggle({ Name = "Prediction (target gerak)", CurrentValue = true, Flag = "AimPredict",
+    Callback = function(v) State.AimbotPredict = v end })
+AimTab:CreateSlider({ Name = "Prediction Amount", Range = {0, 0.5}, Increment = 0.02, Suffix = "s",
+    CurrentValue = 0.12, Flag = "AimPredictAmt",
+    Callback = function(v) State.AimbotPredictAmount = v end })
 AimTab:CreateToggle({ Name = "Free Move (gerak bebas, kamera lock)", CurrentValue = false, Flag = "AimFree",
     Callback = function(v)
         State.AimbotFreeMove = v
-        local h = getHum()
-        if not v and h and State.savedAutoRotate ~= nil then
-            h.AutoRotate = State.savedAutoRotate
-            State.savedAutoRotate = nil
+        if not v then
+            local h = getHum()
+            if h and State.savedAutoRotate ~= nil then
+                h.AutoRotate = State.savedAutoRotate
+                State.savedAutoRotate = nil
+            end
         end
     end })
 AimTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "AimFovShow",
@@ -1132,7 +1178,7 @@ AimTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "Aim
 AimTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 50, 50), Flag = "AimColor",
     Callback = function(color) State.AimbotColor = color end })
 AimTab:CreateParagraph({ Title = "Info Aimbot",
-    Content = "Client-side camera lock. Efek nembak tergantung game — kalau hit detection dari kamera client, ngefek. Kalau server-authoritative, cuma visual. Free Move: kamera tetap lock target, WASD tetap jalan." })
+    Content = "Lock paksa via BindToRenderStep priority Camera+1 — override camera script default. Sticky target nggak ganti mid-aim. Efek nembak tergantung game: kamera client → ngefek. Server-authoritative → visual doang." })
 
 -- FUN
 local FunTab = Window:CreateTab("Fun", 4483362458)
@@ -1145,8 +1191,6 @@ FunTab:CreateButton({ Name = "Test Map Support Sekarang", Callback = function()
     State.godTestDone = false
     runGodModeTest()
 end })
-FunTab:CreateParagraph({ Title = "Info Map Support",
-    Content = "Penuh = health & dead state client-trust. Tidak support = game kunci health server." })
 FunTab:CreateSection("Spinbot")
 FunTab:CreateToggle({ Name = "Enable Spinbot", CurrentValue = false, Flag = "Spin",
     Callback = function(v) if v then startSpinBot() else stopSpinBot() end end })
@@ -1257,4 +1301,4 @@ LocalPlayer.CharacterAdded:Connect(function()
     if State.NoclipEnabled then startNoclip() end
 end)
 
-notify("ByVoid", "No system is safe — aimbot + POV lock loaded")
+notify("ByVoid", "No system is safe — brutal aimbot locked & loaded")
