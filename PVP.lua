@@ -1,10 +1,8 @@
 --[[
-    Delta PvP Mod Menu — MOBILE EDITION
-    Executor: Delta (Android/iOS)
-    Drag: touch the title bar and move
-    Collapse: tap the — / + button
-    Toggle GUI: floating pink button (bottom-right)
-    Features: Aimbot, ESP, Speed, Noclip, Infinite Jump, FOV, Fullbright
+    Delta PvP Mod Menu — MOBILE FIXED
+    Drag pakai InputChanged (bukan frame.Draggable)
+    Layout pakai UIScale + offset yang muat layar HP kecil
+    Toggle GUI: tombol O pink (bisa digeser juga)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -52,6 +50,15 @@ local FOVCircle = nil
 local HoldingAim = false
 
 -- ═══════════════════════════════════════════════════════════════
+-- RESPONSIVE SIZING (menyesuaikan layar HP)
+-- ═══════════════════════════════════════════════════════════════
+local viewport = workspace.CurrentCamera.ViewportSize
+local isSmall = viewport.X < 500
+local MENU_W = isSmall and math.floor(viewport.X * 0.92) or 320
+local MENU_H = isSmall and math.min(math.floor(viewport.Y * 0.75), 460) or 440
+local TB_H = 46
+
+-- ═══════════════════════════════════════════════════════════════
 -- GUI ROOT
 -- ═══════════════════════════════════════════════════════════════
 local ScreenGui = Instance.new("ScreenGui")
@@ -59,73 +66,66 @@ ScreenGui.Name = "DeltaPvPMenu"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999
 ScreenGui.Parent = guiParent
 
 -- ═══════════════════════════════════════════════════════════════
--- FLOATING TOGGLE BUTTON (mobile-friendly, draggable too)
+-- FLOATING TOGGLE (draggable, mobile-friendly)
 -- ═══════════════════════════════════════════════════════════════
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Name = "FloatBtn"
-FloatBtn.Size = UDim2.new(0, 52, 0, 52)
-FloatBtn.Position = UDim2.new(1, -70, 0.5, -26)
+FloatBtn.Size = UDim2.new(0, 54, 0, 54)
+FloatBtn.Position = UDim2.new(1, -74, 0.5, -27)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 120)
 FloatBtn.Text = "O"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FloatBtn.TextSize = 22
+FloatBtn.TextSize = 24
 FloatBtn.Font = Enum.Font.GothamBlack
 FloatBtn.AutoButtonColor = false
 FloatBtn.Active = true
 FloatBtn.Parent = ScreenGui
 
-local FloatCorner = Instance.new("UICorner")
-FloatCorner.CornerRadius = UDim.new(1, 0)
-FloatCorner.Parent = FloatBtn
-
-local FloatStroke = Instance.new("UIStroke")
-FloatStroke.Color = Color3.fromRGB(255, 255, 255)
-FloatStroke.Thickness = 1.5
-FloatStroke.Transparency = 0.4
-FloatStroke.Parent = FloatBtn
+Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
+local fStroke = Instance.new("UIStroke", FloatBtn)
+fStroke.Color = Color3.fromRGB(255, 255, 255)
+fStroke.Thickness = 2
+fStroke.Transparency = 0.5
 
 -- ═══════════════════════════════════════════════════════════════
 -- MAIN FRAME
 -- ═══════════════════════════════════════════════════════════════
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.new(0, 300, 0, 430)
-Main.Position = UDim2.new(0.5, -150, 0.5, -215)
+Main.Size = UDim2.new(0, MENU_W, 0, MENU_H)
+Main.Position = UDim2.new(0.5, -MENU_W / 2, 0.5, -MENU_H / 2)
 Main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = Main
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+local mainStroke = Instance.new("UIStroke", Main)
+mainStroke.Color = Color3.fromRGB(220, 60, 120)
+mainStroke.Thickness = 1.5
+mainStroke.Transparency = 0.3
 
-local MainStroke = Instance.new("UIStroke")
-MainStroke.Color = Color3.fromRGB(220, 60, 120)
-MainStroke.Thickness = 1.5
-MainStroke.Transparency = 0.3
-MainStroke.Parent = Main
-
--- Title bar (DRAG ZONE)
+-- ═══════════════════════════════════════════════════════════════
+-- TITLE BAR (DRAG ZONE)
+-- ═══════════════════════════════════════════════════════════════
 local TitleBar = Instance.new("Frame")
 TitleBar.Name = "TitleBar"
-TitleBar.Size = UDim2.new(1, 0, 0, 44)
+TitleBar.Size = UDim2.new(1, 0, 0, TB_H)
 TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 TitleBar.BorderSizePixel = 0
 TitleBar.Active = true
 TitleBar.Parent = Main
 
-local TBTitleCorner = Instance.new("UICorner")
-TBTitleCorner.CornerRadius = UDim.new(0, 10)
-TBTitleCorner.Parent = TitleBar
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
 local TBTitleFill = Instance.new("Frame")
-TBTitleFill.Size = UDim2.new(1, 0, 0, 22)
-TBTitleFill.Position = UDim2.new(0, 0, 1, -22)
+TBTitleFill.Size = UDim2.new(1, 0, 0, 20)
+TBTitleFill.Position = UDim2.new(0, 0, 1, -20)
 TBTitleFill.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 TBTitleFill.BorderSizePixel = 0
 TBTitleFill.Parent = TitleBar
@@ -141,26 +141,21 @@ TitleText.Font = Enum.Font.GothamBold
 TitleText.TextXAlignment = Enum.TextXAlignment.Left
 TitleText.Parent = TitleBar
 
--- Collapse button
 local CollapseBtn = Instance.new("TextButton")
-CollapseBtn.Size = UDim2.new(0, 32, 0, 32)
-CollapseBtn.Position = UDim2.new(1, -78, 0, 6)
+CollapseBtn.Size = UDim2.new(0, 34, 0, 34)
+CollapseBtn.Position = UDim2.new(1, -82, 0, 6)
 CollapseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
 CollapseBtn.Text = "—"
 CollapseBtn.TextColor3 = Color3.fromRGB(220, 220, 230)
-CollapseBtn.TextSize = 20
+CollapseBtn.TextSize = 22
 CollapseBtn.Font = Enum.Font.GothamBold
 CollapseBtn.AutoButtonColor = false
 CollapseBtn.Parent = TitleBar
+Instance.new("UICorner", CollapseBtn).CornerRadius = UDim.new(0, 6)
 
-local CBCorner = Instance.new("UICorner")
-CBCorner.CornerRadius = UDim.new(0, 6)
-CBCorner.Parent = CollapseBtn
-
--- Close/hide button
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 32, 0, 32)
-CloseBtn.Position = UDim2.new(1, -40, 0, 6)
+CloseBtn.Size = UDim2.new(0, 34, 0, 34)
+CloseBtn.Position = UDim2.new(1, -44, 0, 6)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 60)
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -168,19 +163,18 @@ CloseBtn.TextSize = 16
 CloseBtn.Font = Enum.Font.GothamBold
 CloseBtn.AutoButtonColor = false
 CloseBtn.Parent = TitleBar
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
-local XCorner = Instance.new("UICorner")
-XCorner.CornerRadius = UDim.new(0, 6)
-XCorner.Parent = CloseBtn
-
--- Content Scroll
+-- ═══════════════════════════════════════════════════════════════
+-- SCROLL CONTENT
+-- ═══════════════════════════════════════════════════════════════
 local Scroll = Instance.new("ScrollingFrame")
 Scroll.Name = "Scroll"
-Scroll.Size = UDim2.new(1, -16, 1, -60)
-Scroll.Position = UDim2.new(0, 8, 0, 52)
+Scroll.Size = UDim2.new(1, -12, 1, -(TB_H + 10))
+Scroll.Position = UDim2.new(0, 6, 0, TB_H + 6)
 Scroll.BackgroundTransparency = 1
 Scroll.BorderSizePixel = 0
-Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarThickness = 5
 Scroll.ScrollBarImageColor3 = Color3.fromRGB(220, 60, 120)
 Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -193,11 +187,11 @@ Layout.SortOrder = Enum.SortOrder.LayoutOrder
 Layout.Parent = Scroll
 
 -- ═══════════════════════════════════════════════════════════════
--- WIDGET BUILDERS (touch-sized)
+-- WIDGET BUILDERS
 -- ═══════════════════════════════════════════════════════════════
 local function CreateLabel(text)
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 28)
+    lbl.Size = UDim2.new(1, 0, 0, 26)
     lbl.BackgroundTransparency = 1
     lbl.Text = text
     lbl.TextColor3 = Color3.fromRGB(220, 60, 120)
@@ -210,17 +204,14 @@ end
 
 local function CreateToggle(name, default, callback)
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 44)
+    frame.Size = UDim2.new(1, 0, 0, 46)
     frame.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
     frame.BorderSizePixel = 0
     frame.Parent = Scroll
-
-    local fc = Instance.new("UICorner")
-    fc.CornerRadius = UDim.new(0, 6)
-    fc.Parent = frame
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -70, 1, 0)
+    label.Size = UDim2.new(1, -80, 1, 0)
     label.Position = UDim2.new(0, 12, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = name
@@ -231,19 +222,16 @@ local function CreateToggle(name, default, callback)
     label.Parent = frame
 
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 56, 0, 30)
-    btn.Position = UDim2.new(1, -66, 0, 7)
+    btn.Size = UDim2.new(0, 60, 0, 32)
+    btn.Position = UDim2.new(1, -70, 0, 7)
     btn.BackgroundColor3 = default and Color3.fromRGB(220, 60, 120) or Color3.fromRGB(45, 45, 55)
     btn.Text = default and "ON" or "OFF"
     btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 12
+    btn.TextSize = 13
     btn.Font = Enum.Font.GothamBold
     btn.AutoButtonColor = false
     btn.Parent = frame
-
-    local bc = Instance.new("UICorner")
-    bc.CornerRadius = UDim.new(0, 6)
-    bc.Parent = btn
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
 
     local state = default
     btn.MouseButton1Click:Connect(function()
@@ -252,23 +240,19 @@ local function CreateToggle(name, default, callback)
         btn.BackgroundColor3 = state and Color3.fromRGB(220, 60, 120) or Color3.fromRGB(45, 45, 55)
         if callback then callback(state) end
     end)
-
     return frame
 end
 
 local function CreateSlider(name, min, max, default, callback)
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 54)
+    frame.Size = UDim2.new(1, 0, 0, 58)
     frame.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
     frame.BorderSizePixel = 0
     frame.Parent = Scroll
-
-    local fc = Instance.new("UICorner")
-    fc.CornerRadius = UDim.new(0, 6)
-    fc.Parent = frame
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -20, 0, 18)
+    label.Size = UDim2.new(1, -20, 0, 20)
     label.Position = UDim2.new(0, 12, 0, 6)
     label.BackgroundTransparency = 1
     label.Text = name .. ": " .. default
@@ -279,31 +263,33 @@ local function CreateSlider(name, min, max, default, callback)
     label.Parent = frame
 
     local barBg = Instance.new("Frame")
-    barBg.Size = UDim2.new(1, -24, 0, 10)
-    barBg.Position = UDim2.new(0, 12, 0, 32)
+    barBg.Size = UDim2.new(1, -24, 0, 14)
+    barBg.Position = UDim2.new(0, 12, 0, 34)
     barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
     barBg.BorderSizePixel = 0
     barBg.Parent = frame
-
-    local bgc = Instance.new("UICorner")
-    bgc.CornerRadius = UDim.new(0, 5)
-    bgc.Parent = barBg
+    Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 7)
 
     local fill = Instance.new("Frame")
     fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
     fill.BackgroundColor3 = Color3.fromRGB(220, 60, 120)
     fill.BorderSizePixel = 0
     fill.Parent = barBg
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 7)
 
-    local fillc = Instance.new("UICorner")
-    fillc.CornerRadius = UDim.new(0, 5)
-    fillc.Parent = fill
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.new(0, 18, 0, 18)
+    knob.Position = UDim2.new(fill.Size.X.Scale, -9, 0.5, -9)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    knob.Parent = barBg
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
     local dragging = false
-    local function updateSlider(input)
+    local function setVal(input)
         local pos = math.clamp((input.Position.X - barBg.AbsolutePosition.X) / barBg.AbsoluteSize.X, 0, 1)
         local val = math.floor(min + (max - min) * pos)
         fill.Size = UDim2.new(pos, 0, 1, 0)
+        knob.Position = UDim2.new(pos, -9, 0.5, -9)
         label.Text = name .. ": " .. val
         if callback then callback(val) end
     end
@@ -312,17 +298,15 @@ local function CreateSlider(name, min, max, default, callback)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
-            updateSlider(input)
+            setVal(input)
         end
     end)
-
     UserInputService.InputChanged:Connect(function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
             or input.UserInputType == Enum.UserInputType.Touch) then
-            updateSlider(input)
+            setVal(input)
         end
     end)
-
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
@@ -387,59 +371,54 @@ CreateToggle("Fullbright", false, function(v)
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- MOBILE DRAG (works with touch on title bar)
+-- DRAG SYSTEM (BENERAN JALAN DI HP)
+-- Menggunakan InputBegan di handle + InputChanged global
 -- ═══════════════════════════════════════════════════════════════
-local function makeDraggable(frame, dragHandle)
+local function makeDraggable(frame, handle)
     local dragging = false
+    local dragInput = nil
     local dragStart = nil
     local startPos = nil
 
-    local function startDrag(input)
-        dragging = true
-        dragStart = input.Position
-        startPos = frame.Position
-    end
-
-    local function updateDrag(input)
-        if not dragging then return end
-        local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-
-    local function endDrag()
-        dragging = false
-    end
-
-    dragHandle.InputBegan:Connect(function(input)
+    handle.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            startDrag(input)
+            dragging = true
+            dragInput = input
+            dragStart = input.Position
+            startPos = frame.Position
         end
     end)
 
-    dragHandle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch then
-            updateDrag(input)
+    handle.InputChanged:Connect(function(input)
+        if dragging and input == dragInput then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
         end
     end)
 
     UserInputService.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch then
-            updateDrag(input)
+        if dragging and input == dragInput then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
         end
     end)
 
     UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            endDrag()
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            dragging = false
+            dragInput = nil
         end
     end)
 end
@@ -448,16 +427,17 @@ makeDraggable(Main, TitleBar)
 makeDraggable(FloatBtn, FloatBtn)
 
 -- ═══════════════════════════════════════════════════════════════
--- COLLAPSE / EXPAND / HIDE
+-- COLLAPSE / HIDE
 -- ═══════════════════════════════════════════════════════════════
 local collapsed = false
-local EXPANDED_SIZE = UDim2.new(0, 300, 0, 430)
-local COLLAPSED_SIZE = UDim2.new(0, 300, 0, 44)
+local EXPANDED = UDim2.new(0, MENU_W, 0, MENU_H)
+local COLLAPSED = UDim2.new(0, MENU_W, 0, TB_H)
 
 local function setCollapsed(state)
     collapsed = state
-    local info = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-    TweenService:Create(Main, info, { Size = state and COLLAPSED_SIZE or EXPANDED_SIZE }):Play()
+    TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+        Size = state and COLLAPSED or EXPANDED,
+    }):Play()
     Scroll.Visible = not state
     CollapseBtn.Text = state and "+" or "—"
 end
@@ -481,7 +461,7 @@ FloatBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- AIMBOT LOGIC
+-- AIMBOT
 -- ═══════════════════════════════════════════════════════════════
 local function getAimPart(char)
     if not char then return nil end
@@ -550,18 +530,12 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
     Camera.CFrame = Camera.CFrame:Lerp(goal, 1 - Config.Aimbot.Smooth)
 end)
 
--- MOBILE AIM ACTIVATION: touch screen
 UserInputService.TouchStarted:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        if Config.Aimbot.Enabled then HoldingAim = true end
-    end
+    if Config.Aimbot.Enabled then HoldingAim = true end
 end)
 UserInputService.TouchEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then
-        HoldingAim = false
-    end
+    HoldingAim = false
 end)
--- PC fallback
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
@@ -726,4 +700,4 @@ LocalPlayer.OnTeleport:Connect(function()
     if FOVCircle then pcall(function() FOVCircle:Remove() end) end
 end)
 
-print("[DeltaPvP] ollie mobile ready — tap O to show menu")
+print("[DeltaPvP] ollie mobile fixed — drag title bar, tap O to show")
