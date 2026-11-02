@@ -1,4 +1,4 @@
--- pvp_menu_v4_mobile.lua | Roblox PVP mod menu — mobile ready
+-- pvp_menu_v5.lua | Roblox PVP mod menu — slider + FOV circle + UI v5
 
 if not getgenv then error("[PVP] executor dengan getgenv() dibutuhkan") end
 
@@ -8,6 +8,7 @@ getgenv().PVP = PVP
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local LP = Players.LocalPlayer
 if not LP then error("[PVP] tunggu game load") end
 
@@ -152,35 +153,22 @@ local function doPOV()
     if cam and PVP.Config.pov then cam.FieldOfView = PVP.Config.povValue end
 end
 
--- ============ LOOP ============
-RunService.RenderStepped:Connect(function()
-    if PVP.Config.aimbot then doAim() end
-    if PVP.Config.esp then doESP() end
-    if PVP.Config.wallhack then doWallhack() end
-    if PVP.Config.pov then doPOV() end
-end)
-RunService.Heartbeat:Connect(function()
-    if PVP.Config.hitbox then doHitbox() else clearHitbox() end
-    if PVP.Config.speed then doSpeed() end
-    if PVP.Config.noclip then doNoclip() end
-end)
-
--- ============ UI MOBILE ============
+-- ============ UI ============
 PVP.UI = { open = true }
 
-local isMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
 local vp = workspace.CurrentCamera.ViewportSize
-local panelW = math.min(340, vp.X - 40)
+local panelW = math.min(360, vp.X - 32)
 
 local COL = {
-    bg = Color3.fromRGB(18, 18, 24),
-    header = Color3.fromRGB(0, 160, 90),
-    panel = Color3.fromRGB(32, 32, 40),
-    btnOff = Color3.fromRGB(44, 44, 54),
-    btnOn = Color3.fromRGB(0, 150, 80),
-    txt = Color3.fromRGB(235, 235, 235),
-    dim = Color3.fromRGB(165, 165, 175),
-    red = Color3.fromRGB(210, 55, 55),
+    bg = Color3.fromRGB(14, 15, 20),
+    bg2 = Color3.fromRGB(22, 24, 32),
+    accent = Color3.fromRGB(0, 200, 130),
+    accent2 = Color3.fromRGB(0, 120, 255),
+    on = Color3.fromRGB(0, 170, 100),
+    off = Color3.fromRGB(38, 40, 50),
+    txt = Color3.fromRGB(235, 237, 245),
+    dim = Color3.fromRGB(150, 155, 170),
+    red = Color3.fromRGB(220, 60, 70),
 }
 
 local function mk(cls, props, parent)
@@ -198,50 +186,85 @@ local gui = mk("ScreenGui", {
     Parent = LP:WaitForChild("PlayerGui"),
 }, LP:WaitForChild("PlayerGui"))
 
--- ===== FLOATING TOGGLE (drag-able) =====
+-- ===== FOV CIRCLE (ring di tengah layar) =====
+local fovGui = mk("ScreenGui", {
+    Name = "__pvp_fov", ResetOnSpawn = false,
+    IgnoreGuiInset = true, DisplayOrder = 998, Parent = gui.Parent,
+})
+local fovCircle = mk("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.new(0, PVP.Config.aimFov * 2, 0, PVP.Config.aimFov * 2),
+    BackgroundTransparency = 1,
+    Visible = false,
+    Parent = fovGui,
+}, fovGui)
+mk("UICorner", { CornerRadius = UDim.new(1, 0) }, fovCircle)
+local fovStroke = mk("UIStroke", {
+    Color = COL.accent, Thickness = 1.5, Transparency = 0.25,
+}, fovCircle)
+
+local function updateFovCircle()
+    local size = PVP.Config.aimFov * 2
+    fovCircle.Size = UDim2.new(0, size, 0, size)
+    fovCircle.Visible = PVP.Config.aimbot and PVP.UI.open
+end
+
+-- ===== TOGGLE BUTTON =====
 local toggleBtn = mk("TextButton", {
-    Size = UDim2.new(0, 54, 0, 54),   -- tap target >= 44px
+    Size = UDim2.new(0, 54, 0, 54),
     Position = UDim2.new(0, 16, 0, 90),
-    BackgroundColor3 = COL.header,
+    BackgroundColor3 = COL.accent,
     Text = "▼",
     TextColor3 = Color3.new(1, 1, 1),
-    Font = Enum.Font.Code,
+    Font = Enum.Font.GothamBold,
     TextSize = 20,
     AutoButtonColor = false,
     Parent = gui,
 }, gui)
 mk("UICorner", { CornerRadius = UDim.new(1, 0) }, toggleBtn)
-mk("UIStroke", { Color = Color3.fromRGB(0, 230, 140), Thickness = 2 }, toggleBtn)
+mk("UIStroke", { Color = Color3.fromRGB(255, 255, 255), Thickness = 2, Transparency = 0.5 }, toggleBtn)
 
 -- ===== MAIN FRAME =====
 local frame = mk("Frame", {
-    Size = UDim2.new(0, panelW, 0, math.min(520, vp.Y - 160)),
+    Size = UDim2.new(0, panelW, 0, 0),
     Position = UDim2.new(0, 16, 0, 150),
     BackgroundColor3 = COL.bg,
     BorderSizePixel = 0,
+    ClipsDescendants = true,
     Visible = PVP.UI.open,
     Parent = gui,
 }, gui)
-mk("UICorner", { CornerRadius = UDim.new(0, 12) }, frame)
-mk("UIStroke", { Color = Color3.fromRGB(0, 200, 120), Thickness = 1.5 }, frame)
+mk("UICorner", { CornerRadius = UDim.new(0, 14) }, frame)
+mk("UIStroke", { Color = COL.accent, Thickness = 1.5, Transparency = 0.3 }, frame)
 
--- Header + drag (mouse & touch)
+local targetH = math.min(540, vp.Y - 180)
+frame.Size = UDim2.new(0, panelW, 0, targetH)
+
+-- gradient header
 local header = mk("Frame", {
-    Size = UDim2.new(1, 0, 0, 44),
-    BackgroundColor3 = COL.header,
+    Size = UDim2.new(1, 0, 0, 48),
+    BackgroundColor3 = COL.accent,
     BorderSizePixel = 0,
     Active = true,
     Parent = frame,
 }, frame)
-mk("UICorner", { CornerRadius = UDim.new(0, 12) }, header)
+mk("UICorner", { CornerRadius = UDim.new(0, 14) }, header)
+mk("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, COL.accent),
+        ColorSequenceKeypoint.new(1, COL.accent2),
+    }),
+    Rotation = 0,
+}, header)
 
 mk("TextLabel", {
-    Size = UDim2.new(1, -100, 1, 0),
-    Position = UDim2.new(0, 14, 0, 0),
+    Size = UDim2.new(1, -110, 1, 0),
+    Position = UDim2.new(0, 16, 0, 0),
     BackgroundTransparency = 1,
-    Text = "PVP MENU v4",
+    Text = "✦ PVP MENU v5",
     TextColor3 = Color3.new(1, 1, 1),
-    Font = Enum.Font.Code,
+    Font = Enum.Font.GothamBold,
     TextSize = 16,
     TextXAlignment = Enum.TextXAlignment.Left,
     Parent = header,
@@ -249,219 +272,251 @@ mk("TextLabel", {
 
 local closeBtn = mk("TextButton", {
     Size = UDim2.new(0, 36, 0, 36),
-    Position = UDim2.new(1, -44, 0, 4),
+    Position = UDim2.new(1, -44, 0, 6),
     BackgroundColor3 = COL.red,
-    Text = "X",
+    Text = "✕",
     TextColor3 = Color3.new(1, 1, 1),
-    Font = Enum.Font.Code,
+    Font = Enum.Font.GothamBold,
     TextSize = 16,
     AutoButtonColor = false,
     Parent = header,
 }, header)
 mk("UICorner", { CornerRadius = UDim.new(0, 8) }, closeBtn)
 
--- drag logic works for mouse + touch
+-- drag header
 local dragging, dragStart, startPos = false, nil, nil
-local function beginDrag(input)
-    dragging = true
-    dragStart = input.Position
-    startPos = frame.Position
-end
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        beginDrag(input)
+        dragging = true; dragStart = input.Position; startPos = frame.Position
     end
 end)
 UIS.InputChanged:Connect(function(input)
     if not dragging then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch then
-        local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
+        local d = input.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                    startPos.Y.Scale, startPos.Y.Offset + d.Y)
     end
 end)
 UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
+        or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
 end)
 
--- Body scroll (touch scroll native)
+-- body
 local scroll = mk("ScrollingFrame", {
-    Size = UDim2.new(1, -14, 1, -54),
-    Position = UDim2.new(0, 7, 0, 50),
+    Size = UDim2.new(1, -16, 1, -58),
+    Position = UDim2.new(0, 8, 0, 52),
     BackgroundTransparency = 1,
     ScrollBarThickness = 5,
     ScrollingDirection = Enum.ScrollingDirection.Y,
-    ElasticBehavior = Enum.ElasticBehavior.WhenScrollable,
     CanvasSize = UDim2.new(0, 0, 0, 0),
     Parent = frame,
 }, frame)
 mk("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 12) }, scroll)
-
 local layout = mk("UIListLayout", {
-    Padding = UDim.new(0, 6),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-    Parent = scroll,
+    Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll,
 }, scroll)
 
--- ===== BUILDERS (tap target 44px) =====
+-- ===== BUILDERS =====
 local function section(text)
     mk("TextLabel", {
         Size = UDim2.new(1, 0, 0, 26),
         BackgroundTransparency = 1,
         Text = "▸ " .. text,
-        TextColor3 = Color3.fromRGB(0, 220, 130),
-        Font = Enum.Font.Code,
-        TextSize = 13,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = scroll,
+        TextColor3 = COL.accent, Font = Enum.Font.GothamBold,
+        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = scroll,
     }, scroll)
 end
 
-local function addToggle(label, key)
+local function addToggle(label, key, onChange)
     local btn = mk("TextButton", {
-        Size = UDim2.new(1, 0, 0, 44),   -- 44px tap target
-        BackgroundColor3 = PVP.Config[key] and COL.btnOn or COL.btnOff,
+        Size = UDim2.new(1, 0, 0, 44),
+        BackgroundColor3 = PVP.Config[key] and COL.on or COL.off,
         Text = (PVP.Config[key] and "● " or "○ ") .. label,
-        TextColor3 = COL.txt,
-        Font = Enum.Font.Code,
-        TextSize = 14,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        AutoButtonColor = false,
-        Parent = scroll,
+        TextColor3 = COL.txt, Font = Enum.Font.Gotham,
+        TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left,
+        AutoButtonColor = false, Parent = scroll,
     }, scroll)
-    mk("UICorner", { CornerRadius = UDim.new(0, 8) }, btn)
-    mk("UIPadding", { PaddingLeft = UDim.new(0, 12) }, btn)
+    mk("UICorner", { CornerRadius = UDim.new(0, 10) }, btn)
+    mk("UIPadding", { PaddingLeft = UDim.new(0, 14) }, btn)
     btn.MouseButton1Click:Connect(function()
         PVP.Config[key] = not PVP.Config[key]
-        btn.BackgroundColor3 = PVP.Config[key] and COL.btnOn or COL.btnOff
+        btn.BackgroundColor3 = PVP.Config[key] and COL.on or COL.off
         btn.Text = (PVP.Config[key] and "● " or "○ ") .. label
         if key == "wallhack" and not PVP.Config[key] then clearWallhack() end
+        if onChange then onChange() end
+        updateFovCircle()
     end)
 end
 
-local function addInput(label, key, min, max)
+local function addSlider(label, key, min, max)
     local holder = mk("Frame", {
-        Size = UDim2.new(1, 0, 0, 62),
-        BackgroundTransparency = 1,
-        Parent = scroll,
+        Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, Parent = scroll,
     }, scroll)
-    mk("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 20),
-        BackgroundTransparency = 1,
-        Text = label,
-        TextColor3 = COL.dim,
-        Font = Enum.Font.Code,
-        TextSize = 12,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Parent = holder,
+
+    local lbl = mk("TextLabel", {
+        Size = UDim2.new(1, -60, 0, 20), BackgroundTransparency = 1,
+        Text = label, TextColor3 = COL.dim, Font = Enum.Font.Gotham,
+        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = holder,
     }, holder)
-    local box = mk("TextBox", {
-        Size = UDim2.new(1, 0, 0, 36),
-        Position = UDim2.new(0, 0, 0, 22),
-        BackgroundColor3 = COL.panel,
-        Text = tostring(PVP.Config[key]),
-        TextColor3 = COL.txt,
-        Font = Enum.Font.Code,
-        TextSize = 14,
-        ClearTextOnFocus = false,
-        Parent = holder,
+
+    local valLbl = mk("TextLabel", {
+        Size = UDim2.new(0, 55, 0, 20), Position = UDim2.new(1, -55, 0, 0),
+        BackgroundTransparency = 1, Text = tostring(PVP.Config[key]),
+        TextColor3 = COL.accent, Font = Enum.Font.GothamBold,
+        TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right, Parent = holder,
     }, holder)
-    mk("UICorner", { CornerRadius = UDim.new(0, 6) }, box)
-    box.FocusLost:Connect(function()
-        local n = tonumber(box.Text)
-        if n then
-            n = math.clamp(n, min, max)
-            PVP.Config[key] = n
-            box.Text = tostring(n)
-        else
-            box.Text = tostring(PVP.Config[key])
+
+    local track = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0, 30),
+        BackgroundColor3 = COL.off, Parent = holder,
+    }, holder)
+    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+
+    local fill = mk("Frame", {
+        Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = COL.accent, Parent = track,
+    }, track)
+    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
+
+    local knob = mk("Frame", {
+        Size = UDim2.new(0, 18, 0, 18),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0, 0, 0.5, 0),
+        BackgroundColor3 = Color3.new(1, 1, 1), Parent = track,
+    }, track)
+    mk("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
+    mk("UIStroke", { Color = COL.accent, Thickness = 2 }, knob)
+
+    local function setFromX(px)
+        local trackW = track.AbsoluteSize.X
+        if trackW <= 0 then return end
+        local rel = math.clamp(px / trackW, 0, 1)
+        local val = min + (max - min) * rel
+        val = math.floor(val * 100 + 0.5) / 100
+        PVP.Config[key] = val
+        valLbl.Text = tostring(val)
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        knob.Position = UDim2.new(rel, 0, 0.5, 0)
+        if key == "aimFov" then updateFovCircle() end
+    end
+
+    local dragging = false
+    local function begin(input)
+        dragging = true
+        local relX = input.Position.X - track.AbsolutePosition.X
+        setFromX(relX)
+    end
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            begin(input)
         end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            setFromX(input.Position.X - track.AbsolutePosition.X)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    -- init posisi
+    task.defer(function()
+        local rel = (PVP.Config[key] - min) / (max - min)
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        knob.Position = UDim2.new(rel, 0, 0.5, 0)
     end)
 end
 
 -- ===== CONTENT =====
 section("AIMBOT")
-addToggle("Aimbot", "aimbot")
-addInput("Aim FOV", "aimFov", 10, 500)
-addInput("Aim Smooth", "aimSmooth", 0.05, 0.95)
+addToggle("Aimbot", "aimbot", updateFovCircle)
+addSlider("Aim FOV", "aimFov", 10, 500)
+addSlider("Aim Smooth", "aimSmooth", 0.05, 0.95)
 
 section("VISUAL")
 addToggle("ESP Player", "esp")
 addToggle("Wallhack (Chams)", "wallhack")
 addToggle("Hitbox Expander", "hitbox")
-addInput("Hitbox Size", "hitboxSize", 2, 30)
+addSlider("Hitbox Size", "hitboxSize", 2, 30)
 
 section("MOVEMENT")
 addToggle("Speed", "speed")
-addInput("Speed Value", "speedValue", 16, 200)
+addSlider("Speed Value", "speedValue", 16, 200)
 addToggle("Noclip", "noclip")
 
 section("CAMERA")
 addToggle("POV Override", "pov")
-addInput("Camera FOV", "povValue", 20, 120)
+addSlider("Camera FOV", "povValue", 20, 120)
 
--- auto canvas
 local function resizeCanvas()
     scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 16)
 end
 resizeCanvas()
 layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(resizeCanvas)
 
--- ===== OPEN/CLOSE =====
+-- ===== OPEN/CLOSE (animasi tween) =====
 local function setOpen(v)
     PVP.UI.open = v
-    frame.Visible = v
+    if v then
+        frame.Visible = true
+        frame.Size = UDim2.new(0, panelW, 0, 0)
+        TweenService:Create(frame, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            { Size = UDim2.new(0, panelW, 0, targetH) }):Play()
+    else
+        local t = TweenService:Create(frame, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            { Size = UDim2.new(0, panelW, 0, 0) })
+        t:Play()
+        t.Completed:Connect(function() if not PVP.UI.open then frame.Visible = false end end)
+    end
     toggleBtn.Text = v and "▼" or "▲"
-    toggleBtn.Position = v and toggleBtn.Position or toggleBtn.Position
+    updateFovCircle()
 end
 
-toggleBtn.MouseButton1Click:Connect(function()
-    setOpen(not PVP.UI.open)
-end)
-closeBtn.MouseButton1Click:Connect(function()
-    setOpen(false)
-end)
+toggleBtn.MouseButton1Click:Connect(function() setOpen(not PVP.UI.open) end)
+closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
 
--- toggle button drag-able (HP: geser biar nggak nutupin tombol game)
-local tbDragging, tbStart, tbPos = false, nil, nil
+-- toggle button draggable
+local tbDrag, tbStart, tbPos = false, nil, nil
 toggleBtn.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        tbDragging = true
-        tbStart = input.Position
-        tbPos = toggleBtn.Position
+        tbDrag = true; tbStart = input.Position; tbPos = toggleBtn.Position
     end
 end)
 UIS.InputChanged:Connect(function(input)
-    if not tbDragging then return end
+    if not tbDrag then return end
     if input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch then
         local d = input.Position - tbStart
-        if d.Magnitude > 6 then  -- threshold: klik vs drag
+        if d.Magnitude > 6 then
             toggleBtn.Position = UDim2.new(
                 tbPos.X.Scale, tbPos.X.Offset + d.X,
-                tbPos.Y.Scale, tbPos.Y.Offset + d.Y
-            )
+                tbPos.Y.Scale, tbPos.Y.Offset + d.Y)
         end
     end
 end)
 UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
-        tbDragging = false
+        or input.UserInputType == Enum.UserInputType.Touch then tbDrag = false end
+end)
+
+-- render loop utk FOV circle ukuran realtime
+RunService.RenderStepped:Connect(function()
+    if fovCircle.Visible then
+        local size = PVP.Config.aimFov * 2
+        fovCircle.Size = UDim2.new(0, size, 0, size)
     end
 end)
 
--- mobile hotkey: 3-finger tap toggle (buat HP)
-local touches = 0
-UIS.TouchStarted:Connect(function() touches = touches + 1 end)
-UIS.TouchEnded:Connect(function() touches = 0 end)
-
-print("[PVP] v4 mobile ready — tombol ▼ buka, X tutup, tombol bisa digeser")
+updateFovCircle()
+print("[PVP] v5 ready — slider drag, FOV circle, UI animated")
