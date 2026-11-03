@@ -1,14 +1,13 @@
 --[[
     ByVoid — No system is safe
-    v5.1 UNIVERSAL BYPASS FRAMEWORK
-      A. Client-side anti-detect (protect_gui, randomize nama, hide Drawing)
-      B. Speed/Jump loop re-apply tiap frame
-      C. Auto-recon remote generic (scan nama, coba FireServer)
-      D. Map support tag buat speed + jump (kayak god mode)
-    semua fitur lama UTUH:
-      jump tahan, fly HP, speed, ESP brutal optimized, noclip,
-      wallhack glow, spinbot, god mode, fullbright, low graphics, POV,
-      aimbot FOV ring, tp
+    v5.2 BYPASS DIGABUNG:
+      - Speed: otomatis re-apply WalkSpeed tiap frame
+      - Multi Jump: otomatis maksa JumpPower + loncat terus
+      - Fly: otomatis maksa PlatformStand tiap frame
+      - Bypass tab fokus ke Anti-Detect + Map Support + Recon
+    fitur UTUH:
+      ESP brutal optimized, noclip, wallhack glow, spinbot,
+      god mode, fullbright, low graphics, POV, aimbot FOV ring, tp
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
     absolute ollie, built by olivia
 --]]
@@ -28,22 +27,23 @@ local LocalPlayer = Players.LocalPlayer
 local PERF = {
     ESP_HZ = 30, ROOT_CACHE_TTL = 5,
     BOX3D_EVERY = 2, FB_LOOP = 5, LOWGFX_LOOP = 5,
-    BYPASS_LOOP_HZ = 60,   -- loop re-apply speed/jump 60 FPS
-    RECON_TTL = 30,        -- recon remote ulang tiap 30 detik
+    RECON_TTL = 30,
 }
 
--- random tag biar nama instance nggak keliatan pola
 local TAG = tostring(math.random(100000, 999999))
 local function rndName(base) return base .. "_" .. TAG end
 
 local State = {
+    -- MOVEMENT
     MultiJumpEnabled = false, jumpVelocity = 50, JumpHoldInterval = 0.08, jumpInputActive = false,
     FlyEnabled = false, FlySpeed = 100, flyConn = nil, flyBV = nil, flyBG = nil, flyUp = false, flyDown = false,
     SpeedEnabled = false, WalkSpeed = 50, defaultWalkSpeed = 16,
+    -- ESP
     EspEnabled = false, EspGlow = false, EspLine = false, EspBox = false,
     EspName = false, EspHealth = false, EspDistance = false, EspBox3D = false,
     EspFallbackScan = false, EspColor = Color3.fromRGB(0, 255, 100), EspMaxDist = 500,
     espObjects = {}, espScanTick = 0, rootCache = {},
+    -- UTILS
     NoclipEnabled = false, WallhackGlowEnabled = false,
     WallhackColor = Color3.fromRGB(255, 60, 60),
     wallhackObjects = {}, savedCollide = {}, noclipConn = nil,
@@ -54,31 +54,19 @@ local State = {
     FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
-    -- AIMBOT (FOV ring)
-    AimbotEnabled = false,
-    AimbotTargetPart = "Head",
-    AimbotFov = 40,
-    AimbotMaxTransparency = 0.1,
+    -- AIMBOT
+    AimbotEnabled = false, AimbotTargetPart = "Head",
+    AimbotFov = 40, AimbotMaxTransparency = 0.1,
     AimbotRingColor = Color3.fromRGB(128, 0, 128),
     AimbotBind = "ByVoidAimbotRender_" .. TAG,
     fovRing = nil,
-    -- BYPASS FRAMEWORK
-    SpeedBypassEnabled = false,
-    SpeedBypassValue = 50,
-    JumpBypassEnabled = false,
-    JumpBypassVelocity = 50,
-    speedJumpConn = nil,
-    speedSupport = "belum dites",
-    jumpSupport = "belum dites",
+    -- BYPASS FRAMEWORK (digabung)
+    masterBypassConn = nil,
+    AntiDetectEnabled = false, savedGuiNames = {},
+    speedSupport = "belum dites", jumpSupport = "belum dites",
     speedTestDone = false, jumpTestDone = false,
-    -- remote recon
-    RemoteReconEnabled = false,
-    reconThread = nil, reconLast = 0,
-    remoteCandidates = {}, -- {remote, kind}
-    reconSupport = "belum dites",
-    -- anti-detect
-    AntiDetectEnabled = false,
-    savedGuiNames = {},
+    RemoteReconEnabled = false, reconThread = nil, reconLast = 0,
+    remoteCandidates = {}, reconSupport = "belum dites",
     -- misc
     SelectedPlayer = nil,
 }
@@ -105,6 +93,7 @@ end
 local function notify(t, c)
     Rayfield:Notify({ Title = t, Content = c, Duration = 4 })
 end
+local function setLabel(lbl, txt) if lbl then lbl:Set(txt) end end
 
 local function getPlayerRoot(p)
     local now = os.clock()
@@ -133,21 +122,55 @@ local function getPlayerRoot(p)
     return nil, nil
 end
 
-local function setLabel(lbl, txt)
-    if lbl then lbl:Set(txt) end
+-- ============================================================
+-- BYPASS MASTER LOOP (Speed, Jump, Fly PlatformStand)
+-- ============================================================
+local function startMasterBypass()
+    if State.masterBypassConn then State.masterBypassConn:Disconnect() end
+    State.masterBypassConn = RunService.Heartbeat:Connect(function()
+        local hum = getHum()
+        if not hum then return end
+
+        -- SPEED BYPASS
+        if State.SpeedEnabled then
+            if hum.WalkSpeed ~= State.WalkSpeed then
+                hum.WalkSpeed = State.WalkSpeed
+            end
+        end
+
+        -- JUMP BYPASS (maksa JumpPower tinggi)
+        if State.MultiJumpEnabled then
+            local jp = State.jumpVelocity * 1.5
+            if hum.JumpPower and hum.JumpPower < jp then
+                pcall(function() hum.JumpPower = jp end)
+            end
+            if hum.UseJumpPower == false then
+                pcall(function() hum.UseJumpPower = true end)
+            end
+        end
+
+        -- FLY BYPASS (maksa PlatformStand)
+        if State.FlyEnabled then
+            if not hum.PlatformStand then
+                hum.PlatformStand = true
+            end
+        end
+    end)
+end
+
+local function stopMasterBypass()
+    if State.masterBypassConn then State.masterBypassConn:Disconnect(); State.masterBypassConn = nil end
 end
 
 -- ============================================================
--- A. CLIENT-SIDE ANTI-DETECT
+-- A. ANTI-DETECT
 -- ============================================================
 local function startAntiDetect()
     State.AntiDetectEnabled = true
-    -- 1. protect_gui kalau executor support
     pcall(function()
         if syn and syn.protect_gui then syn.protect_gui(Rayfield) end
         if protect_gui then protect_gui(Rayfield) end
     end)
-    -- 2. randomize nama ScreenGui / Drawing user-created
     pcall(function()
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
@@ -159,16 +182,8 @@ local function startAntiDetect()
             end
         end
     end)
-    -- 3. hide Drawing object dari getgc (kalau executor support setrenderproperty / gethui)
-    pcall(function()
-        if gethui then
-            -- pindahin drawing ke gethui biar nggak kebaca workspace
-            -- (Drawing object nggak punya Parent, cuma referensi internal)
-        end
-    end)
-    notify("ByVoid", "anti-detect aktif — GUI + nama di-randomize")
+    notify("ByVoid", "anti-detect aktif")
 end
-
 local function stopAntiDetect()
     State.AntiDetectEnabled = false
     pcall(function()
@@ -183,98 +198,65 @@ local function stopAntiDetect()
 end
 
 -- ============================================================
--- B. SPEED / JUMP LOOP RE-APPLY
--- ============================================================
-local function speedJumpLoop()
-    if State.speedJumpConn then State.speedJumpConn:Disconnect() end
-    State.speedJumpConn = RunService.Heartbeat:Connect(function()
-        local hum = getHum()
-        if not hum then return end
-
-        -- SPEED: paksa WalkSpeed tiap frame
-        if State.SpeedBypassEnabled then
-            local target = State.SpeedBypassValue
-            if hum.WalkSpeed ~= target then
-                hum.WalkSpeed = target
-            end
-        end
-
-        -- JUMP: paksa JumpPower tinggi biar loncat tinggi
-        if State.JumpBypassEnabled then
-            if hum.JumpPower and hum.JumpPower < State.JumpBypassVelocity then
-                hum.JumpPower = State.JumpBypassVelocity
-            end
-            if hum.UseJumpPower == false then
-                pcall(function() hum.UseJumpPower = true end)
-            end
-        end
-    end)
-end
-
-local function stopSpeedJumpLoop()
-    if State.speedJumpConn then State.speedJumpConn:Disconnect(); State.speedJumpConn = nil end
-end
-
--- ============================================================
--- D. MAP SUPPORT TAG — SPEED & JUMP
+-- D. MAP SUPPORT TAG
 -- ============================================================
 local function runSpeedTest()
     task.spawn(function()
         local hum = getHum()
-        if not hum then setLabel(SpeedSupportLabel, "Speed Support: no humanoid"); return end
+        if not hum then setLabel(SpeedSupportLabel, "Speed: no humanoid"); return end
         local origWS = hum.WalkSpeed
-        local origBypass = State.SpeedBypassEnabled
-        State.SpeedBypassEnabled = true
-        State.SpeedBypassValue = 100
+        local origSpeedEnabled = State.SpeedEnabled
+        local origSpeedVal = State.WalkSpeed
+        State.SpeedEnabled = true
+        State.WalkSpeed = 100
         task.wait(1.2)
         local after = hum.WalkSpeed
         local held = math.abs(after - 100) < 2
-        -- restore
-        State.SpeedBypassEnabled = origBypass
-        State.SpeedBypassValue = 50
+        State.SpeedEnabled = origSpeedEnabled
+        State.WalkSpeed = origSpeedVal
         pcall(function() hum.WalkSpeed = origWS end)
 
         local txt
-        if held then txt = "SUPPORT PENUH — speed nempel"
+        if held then txt = "SUPPORT PENUH"
         else
             local diff = math.abs(after - 100)
-            if diff < 20 then txt = "SUPPORT PARSIAL — speed goyang dikit"
-            else txt = "TIDAK SUPPORT — server reset speed" end
+            if diff < 20 then txt = "SUPPORT PARSIAL"
+            else txt = "TIDAK SUPPORT" end
         end
         State.speedSupport = txt; State.speedTestDone = true
-        setLabel(SpeedSupportLabel, "Speed Support: " .. txt)
+        setLabel(SpeedSupportLabel, "Speed: " .. txt)
     end)
 end
 
 local function runJumpTest()
     task.spawn(function()
         local hum = getHum()
-        if not hum then setLabel(JumpSupportLabel, "Jump Support: no humanoid"); return end
+        if not hum then setLabel(JumpSupportLabel, "Jump: no humanoid"); return end
         local origJP = hum.JumpPower or 50
-        local origBypass = State.JumpBypassEnabled
-        State.JumpBypassEnabled = true
-        State.JumpBypassVelocity = 100
+        local origJumpEnabled = State.MultiJumpEnabled
+        local origJumpVal = State.jumpVelocity
+        State.MultiJumpEnabled = true
+        State.jumpVelocity = 100
         task.wait(1.2)
         local after = hum.JumpPower or 0
-        local held = math.abs(after - 100) < 5
-        State.JumpBypassEnabled = origBypass
-        State.JumpBypassVelocity = 50
+        local held = after > 100
+        State.MultiJumpEnabled = origJumpEnabled
+        State.jumpVelocity = origJumpVal
         pcall(function() hum.JumpPower = origJP end)
 
         local txt
-        if held then txt = "SUPPORT PENUH — jump power nempel"
+        if held then txt = "SUPPORT PENUH"
         else
-            local diff = math.abs(after - 100)
-            if diff < 20 then txt = "SUPPORT PARSIAL — jump goyang"
-            else txt = "TIDAK SUPPORT — server reset jump" end
+            if after > 60 then txt = "SUPPORT PARSIAL"
+            else txt = "TIDAK SUPPORT" end
         end
         State.jumpSupport = txt; State.jumpTestDone = true
-        setLabel(JumpSupportLabel, "Jump Support: " .. txt)
+        setLabel(JumpSupportLabel, "Jump: " .. txt)
     end)
 end
 
 -- ============================================================
--- C. AUTO-RECON REMOTE GENERIC
+-- C. REMOTE RECON
 -- ============================================================
 local function scanRemotes()
     local found = {}
@@ -284,7 +266,6 @@ local function scanRemotes()
             pcall(function()
                 if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
                     local name = obj.Name:lower()
-                    -- filter nama yang nyebut speed/move/jump/walk
                     if name:match("speed") or name:match("move") or
                        name:match("jump") or name:match("walk") or
                        name:match("char") then
@@ -300,23 +281,13 @@ local function scanRemotes()
     return found
 end
 
-local function tryFireRemote(remote, kind)
-    -- coba argumen generic, pcall biar nggak error kalau reject
-    local argsList = {
-        { 100 },                -- angka doang
-        { "Speed", 100 },       -- string + angka
-        { LocalPlayer, 100 },   -- player + angka
-        { 100, 100, 100 },      -- tiga angka
-        { { speed = 100 } },    -- table
-    }
+local function tryFireRemote(remote)
+    local argsList = { {100}, {"Speed",100}, {LocalPlayer,100}, {100,100,100}, {{speed=100}} }
     local ok = false
     for _, args in ipairs(argsList) do
         pcall(function()
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(unpack(args))
-            elseif remote:IsA("RemoteFunction") then
-                remote:InvokeServer(unpack(args))
-            end
+            if remote:IsA("RemoteEvent") then remote:FireServer(unpack(args))
+            elseif remote:IsA("RemoteFunction") then remote:InvokeServer(unpack(args)) end
             ok = true
         end)
         if ok then break end
@@ -326,7 +297,7 @@ end
 
 local function startRemoteRecon()
     State.RemoteReconEnabled = true
-    if State.reconThread then pcall(function() task.cancel(State.reconThread) end); State.reconThread = nil end
+    if State.reconThread then pcall(function() task.cancel(State.reconThread) end) end
     State.reconThread = task.spawn(function()
         while State.RemoteReconEnabled do
             local now = os.clock()
@@ -335,40 +306,35 @@ local function startRemoteRecon()
                 local found = scanRemotes()
                 State.remoteCandidates = found
                 local txt
-                if #found == 0 then
-                    txt = "TIDAK ADA REMOTE COCOK — kemungkinan server-authoritative"
+                if #found == 0 then txt = "TIDAK ADA REMOTE"
                 else
-                    txt = string.format("NEMU %d REMOTE — coba FireServer generic", #found)
-                    -- coba fire tiap kandidat
                     local fired = 0
                     for _, c in ipairs(found) do
-                        if tryFireRemote(c.remote, c.name) then fired = fired + 1 end
+                        if tryFireRemote(c.remote) then fired = fired + 1 end
                     end
-                    txt = txt .. string.format(" (%d kepanggil)", fired)
+                    txt = string.format("NEMU %d REMOTE (%d kepanggil)", #found, fired)
                 end
                 State.reconSupport = txt
-                setLabel(ReconSupportLabel, "Remote Recon: " .. txt)
+                setLabel(ReconSupportLabel, "Recon: " .. txt)
             end
             task.wait(2)
         end
     end)
 end
-
 local function stopRemoteRecon()
     State.RemoteReconEnabled = false
     if State.reconThread then pcall(function() task.cancel(State.reconThread) end); State.reconThread = nil end
 end
 
 -- ============================================================
--- MULTI JUMP (TETAP, TAPI LOOP)
+-- MOVEMENT (MULTI JUMP & FLY)
 -- ============================================================
 local jumpHolding = false
 local jumpHoldThread = nil
 local function doJump()
     if not State.MultiJumpEnabled or not State.jumpInputActive then return end
     local hum = getHum()
-    if not hum or hum.Health <= 0 then return end
-    if hum:GetState() == Enum.HumanoidStateType.Dead then return end
+    if not hum or hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then return end
     local hrp = getHRP()
     if not hrp then return end
     local vel = hrp.AssemblyLinearVelocity
@@ -414,9 +380,6 @@ task.spawn(hookTouchJumpButton)
 LocalPlayer.CharacterAdded:Connect(function() task.wait(2); task.spawn(hookTouchJumpButton) end)
 local function setMultiJump(v) State.MultiJumpEnabled = v; if not v then stopJumpHold() end end
 
--- ============================================================
--- FLY
--- ============================================================
 local function stopFly()
     if State.flyConn then State.flyConn:Disconnect(); State.flyConn = nil end
     if State.flyBV then State.flyBV:Destroy(); State.flyBV = nil end
@@ -451,13 +414,11 @@ local function startFly()
     end)
 end
 local function toggleFly(v) if v then startFly() else stopFly() end end
-
--- ============================================================
--- SPEED biasa (toggle lama)
--- ============================================================
 local function applySpeed()
-    local hum = getHum(); if not hum then return end
-    hum.WalkSpeed = State.SpeedEnabled and State.WalkSpeed or State.defaultWalkSpeed
+    -- nggak pakai set sekali, master bypass yang ngerjain
+    if not State.SpeedEnabled then
+        local hum = getHum(); if hum then hum.WalkSpeed = State.defaultWalkSpeed end
+    end
 end
 
 -- ============================================================
@@ -715,7 +676,9 @@ end
 local function createWallhackGlow(p)
     if p == LocalPlayer then return end
     local char = p.Character; if not char then return end
-    local old = char:FindFirstChild(rndName("WH")); if old then old:Destroy() end
+    for _, c in ipairs(char:GetChildren()) do
+        if c:IsA("Highlight") and c.Name:match("^WH_") then c:Destroy() end
+    end
     local hl = Instance.new("Highlight")
     hl.Name = rndName("WH"); hl.FillColor = State.WallhackColor
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
@@ -1054,8 +1017,8 @@ _G.OllieFlyUI = {
     hide = function() upBtn.Visible = false; downBtn.Visible = false end,
 }
 
--- init speed/jump loop (dipanggil sekali, cek flag)
-speedJumpLoop()
+-- start master bypass (loop gabungan)
+startMasterBypass()
 
 -- ============================================================
 -- UI RAYFIELD
@@ -1081,12 +1044,12 @@ MoveTab:CreateToggle({ Name = "Enable Fly", CurrentValue = false, Flag = "Fly",
     Callback = function(v) toggleFly(v) end })
 MoveTab:CreateSlider({ Name = "Fly Speed", Range = {10, 500}, Increment = 10, Suffix = "studs/s",
     CurrentValue = 100, Flag = "FlySpeed", Callback = function(v) State.FlySpeed = v end })
-MoveTab:CreateSection("Speed")
+MoveTab:CreateSection("Speed (Bypass Otomatis)")
 MoveTab:CreateToggle({ Name = "Enable Speed", CurrentValue = false, Flag = "Speed",
-    Callback = function(v) State.SpeedEnabled = v; applySpeed() end })
+    Callback = function(v) State.SpeedEnabled = v; if not v then applySpeed() end end })
 MoveTab:CreateSlider({ Name = "Walk Speed", Range = {16, 300}, Increment = 1, Suffix = "studs/s",
     CurrentValue = 50, Flag = "WalkSpeed",
-    Callback = function(v) State.WalkSpeed = v; applySpeed() end })
+    Callback = function(v) State.WalkSpeed = v end })
 
 -- BYPASS TAB
 local BypassTab = Window:CreateTab("Bypass", 4483362458)
@@ -1094,23 +1057,15 @@ BypassTab:CreateSection("A. Client-Side Anti-Detect")
 BypassTab:CreateToggle({ Name = "Enable Anti-Detect", CurrentValue = false, Flag = "AntiDetect",
     Callback = function(v) if v then startAntiDetect() else stopAntiDetect() end end })
 BypassTab:CreateParagraph({ Title = "Info Anti-Detect",
-    Content = "protect_gui kalau executor support, randomize nama ScreenGui + Highlight + BillboardGui + FOV ring. Nyembunyiin ByVoid dari scan client-side. Nggak nembus anti-cheat server." })
+    Content = "protect_gui kalau executor support, randomize nama UI/Highlight/Ring. Nyembunyiin dari scan client." })
 
-BypassTab:CreateSection("B. Speed / Jump Loop Re-Apply")
-BypassTab:CreateToggle({ Name = "Speed Bypass (loop re-apply)", CurrentValue = false, Flag = "SpdBypass",
-    Callback = function(v) State.SpeedBypassEnabled = v end })
-BypassTab:CreateSlider({ Name = "Speed Bypass Value", Range = {16, 300}, Increment = 1, Suffix = "ws",
-    CurrentValue = 50, Flag = "SpdBypassVal",
-    Callback = function(v) State.SpeedBypassValue = v end })
-BypassTab:CreateToggle({ Name = "Jump Bypass (loop JumpPower)", CurrentValue = false, Flag = "JmpBypass",
-    Callback = function(v) State.JumpBypassEnabled = v end })
-BypassTab:CreateSlider({ Name = "Jump Bypass Power", Range = {50, 300}, Increment = 5, Suffix = "jp",
-    CurrentValue = 100, Flag = "JmpBypassVal",
-    Callback = function(v) State.JumpBypassVelocity = v end })
+BypassTab:CreateSection("B. Map Support Test")
 BypassTab:CreateButton({ Name = "Test Speed Support", Callback = runSpeedTest })
-SpeedSupportLabel = BypassTab:CreateLabel("Speed Support: belum dites")
+SpeedSupportLabel = BypassTab:CreateLabel("Speed: belum dites")
 BypassTab:CreateButton({ Name = "Test Jump Support", Callback = runJumpTest })
-JumpSupportLabel = BypassTab:CreateLabel("Jump Support: belum dites")
+JumpSupportLabel = BypassTab:CreateLabel("Jump: belum dites")
+BypassTab:CreateParagraph({ Title = "Info Support",
+    Content = "Tes apakah server reset WalkSpeed/JumpPower. SUPPORT PENUH = hack lo nempel. TIDAK SUPPORT = server-authoritative." })
 
 BypassTab:CreateSection("C. Auto-Recon Remote Generic")
 BypassTab:CreateToggle({ Name = "Enable Remote Recon", CurrentValue = false, Flag = "Recon",
@@ -1119,14 +1074,12 @@ BypassTab:CreateButton({ Name = "Scan Sekarang", Callback = function()
     local found = scanRemotes()
     State.remoteCandidates = found
     local txt
-    if #found == 0 then txt = "TIDAK ADA REMOTE COCOK"
+    if #found == 0 then txt = "TIDAK ADA REMOTE"
     else txt = string.format("NEMU %d REMOTE", #found) end
     State.reconSupport = txt
-    setLabel(ReconSupportLabel, "Remote Recon: " .. txt)
+    setLabel(ReconSupportLabel, "Recon: " .. txt)
 end })
-ReconSupportLabel = BypassTab:CreateLabel("Remote Recon: belum dites")
-BypassTab:CreateParagraph({ Title = "Info Recon",
-    Content = "Scan ReplicatedStorage + Workspace cari RemoteEvent/Function yang namanya nyebut speed/move/jump/walk/char. Coba FireServer argumen generic. Kalau remote nggak bocor, server reject — hasil 'TIDAK ADA REMOTE COCOK' atau 'kepanggil tapi nggak ngefek'." })
+ReconSupportLabel = BypassTab:CreateLabel("Recon: belum dites")
 
 -- AIMBOT
 local AimTab = Window:CreateTab("Aimbot", 4483362458)
@@ -1253,7 +1206,6 @@ LocalPlayer.CharacterAdded:Connect(function()
     stopFly(); stopJumpHold(); stopSpinBot(); applySpeed()
     State.savedCollide = {}; State.rootCache = {}
     if State.NoclipEnabled then startNoclip() end
-    if State.SpeedBypassEnabled or State.JumpBypassEnabled then speedJumpLoop() end
 end)
 
-notify("ByVoid", "v5.1 universal bypass loaded")
+notify("ByVoid", "v5.2 bypass digabung loaded")
