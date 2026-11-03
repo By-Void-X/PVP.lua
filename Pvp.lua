@@ -1,11 +1,9 @@
 --[[
     ByVoid — No system is safe
-    update: AIMBOT LOCK FIX
-      - mode default "Cuma Pas Nembak"
-      - hold-to-aim key (default: right mouse / tombol Aim)
-      - break-lock saat geser layar manual (mouse move / touch drag)
-      - smoothness default 0.15 (bukan snap penuh)
-      - sticky target tetap, tapi bisa di-break
+    update: AIMBOT DIPISAH
+      - SOFT AIM: kamera lerp pelan, bisa digeser lawan arah
+      - HARD LOCK: kamera snap, ngunci penuh
+      - dua toggle terpisah, nggak saling ganggu
     semua fitur lama UTUH:
       jump tahan, fly HP, speed, ESP brutal optimized, noclip,
       wallhack glow, spinbot, god mode, fullbright, low graphics, POV, tp
@@ -48,30 +46,32 @@ local State = {
     FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
-    -- AIMBOT
-    AimbotEnabled = false,
+    -- AIMBOT COMMON
     AimbotTargetPart = "Head",
-    AimbotMode = "Cuma Pas Nembak",
-    AimbotHoldKey = true,           -- wajib tahan tombol aim
-    AimbotBreakOnDrag = true,       -- geser layar manual = break lock
-    AimbotBreakCooldown = 0.6,      -- detik lock berhenti setelah drag
     AimbotFov = 150,
-    AimbotSmooth = 0.15,            -- default lebih longgar
     AimbotPredict = true,
     AimbotPredictAmount = 0.12,
-    AimbotFreeMove = false,
     AimbotShowFov = true,
     AimbotColor = Color3.fromRGB(255, 50, 50),
-    aimbotTarget = nil, aimbotShooting = false, aimbotFrame = 0,
-    aimbotHolding = false, aimbotBreakUntil = 0,
-    lastMousePos = nil,
+    aimbotTarget = nil, aimbotFrame = 0,
+    -- SOFT AIM
+    SoftAimEnabled = false,
+    SoftAimStrength = 0.15,     -- alpha lerp (kecil = soft, gede = keras)
+    SoftAimMode = "Cuma Pas Nembak", -- "Selalu Aktif" / "Cuma Pas Nembak"
+    softAimShooting = false,
+    -- HARD LOCK
+    HardLockEnabled = false,
+    HardLockMode = "Cuma Pas Nembak",
+    hardLockShooting = false,
+    -- misc
     fovCircle = nil,
     savedAutoRotate = nil,
     SelectedPlayer = nil,
 }
 
 local GodSupportLabel = nil
-local AIMBOT_BIND = "ByVoidAimbotRender"
+local SOFT_BIND = "ByVoidSoftAim"
+local HARD_BIND = "ByVoidHardLock"
 local lastESPUpdate = 0
 local box3DFrame = 0
 
@@ -446,7 +446,7 @@ Players.PlayerRemoving:Connect(function(p) removeESP(p); State.rootCache[p] = ni
 RunService.Heartbeat:Connect(updateESP)
 
 -- ============================================================
--- NOCLIP / WALLHACK / SPINBOT (sama seperti sebelumnya)
+-- NOCLIP / WALLHACK / SPINBOT
 -- ============================================================
 local function setNoclipParts(char)
     if not char then return end
@@ -612,7 +612,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- FULLBRIGHT / POV / LOW GFX (ringkas)
+-- FULLBRIGHT / POV / LOW GFX
 -- ============================================================
 local function saveLighting()
     State.fbSaved = {
@@ -696,7 +696,7 @@ local function stopLowGfx()
 end
 
 -- ============================================================
--- AIMBOT — LOCK LONGGAAR
+-- AIMBOT COMMON
 -- ============================================================
 local function getTargetPart(char)
     if not char then return nil end
@@ -763,7 +763,8 @@ local function createFovCircle()
 end
 local function updateFovCircle()
     if not State.fovCircle then return end
-    if State.AimbotEnabled and State.AimbotShowFov then
+    local anyAim = State.SoftAimEnabled or State.HardLockEnabled
+    if anyAim and State.AimbotShowFov then
         State.fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
         State.fovCircle.Radius = State.AimbotFov
         State.fovCircle.Color = State.AimbotColor
@@ -771,28 +772,19 @@ local function updateFovCircle()
     else State.fovCircle.Visible = false end
 end
 
--- cek apakah harus lock:
--- mode "Selalu Aktif" -> lock terus (kecuali break lagi cooldown)
--- mode "Cuma Pas Nembak" -> lock cuma kalau aimbotShooting
--- hold key -> wajib tahan tombol aim
-local function aimbotShouldLock()
-    if not State.AimbotEnabled then return false end
-    if os.clock() < State.aimbotBreakUntil then return false end
-    if State.AimbotHoldKey and not State.aimbotHolding then return false end
-    if State.AimbotMode == "Selalu Aktif" then return true end
-    return State.aimbotShooting
+-- ============================================================
+-- SOFT AIM — lerp pelan, bisa digeser lawan arah
+-- ============================================================
+local function softAimShouldLock()
+    if not State.SoftAimEnabled then return false end
+    if State.SoftAimMode == "Selalu Aktif" then return true end
+    return State.softAimShooting
 end
 
-local function aimbotRenderStep(dt)
+local function softAimRenderStep(dt)
     updateFovCircle()
-    if not State.AimbotEnabled then return end
-
-    if not aimbotShouldLock() then
-        State.aimbotTarget = nil
-        local h = getHum()
-        if h and State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil end
-        return
-    end
+    if not State.SoftAimEnabled then return end
+    if not softAimShouldLock() then return end
 
     State.aimbotFrame = State.aimbotFrame + 1
     if not State.aimbotTarget or State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
@@ -804,101 +796,91 @@ local function aimbotRenderStep(dt)
     local target = State.aimbotTarget
     if not target or not target.part or not target.part.Parent then return end
 
-    local h = getHum()
-    if h then
-        if State.AimbotFreeMove then
-            if State.savedAutoRotate == nil then State.savedAutoRotate = h.AutoRotate end
-            h.AutoRotate = false
-        else
-            if State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil end
-        end
-    end
-
     local camPos = Camera.CFrame.Position
     local targetPos = target.part.Position
     if State.AimbotPredict then targetPos = targetPos + target.part.AssemblyLinearVelocity * State.AimbotPredictAmount end
     local desired = CFrame.lookAt(camPos, targetPos)
-    -- lerp dengan smoothness, minimal alpha biar nggak full snap
-    local alpha = math.clamp(1 - State.AimbotSmooth, 0.05, 1)
+
+    -- alpha kecil = soft. User bisa lawan arah karena kamera cuma ditarik sebagian.
+    local alpha = math.clamp(State.SoftAimStrength, 0.02, 0.5)
     Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
 end
 
-local function startAimbot()
-    State.AimbotEnabled = true
-    State.aimbotTarget = nil; State.aimbotFrame = 0; State.aimbotBreakUntil = 0
-    createFovCircle()
-    pcall(function() RunService:UnbindFromRenderStep(AIMBOT_BIND) end)
-    RunService:BindToRenderStep(AIMBOT_BIND, Enum.RenderPriority.Camera.Value + 1, aimbotRenderStep)
+local function startSoftAim()
+    State.SoftAimEnabled = true
+    pcall(function() RunService:UnbindFromRenderStep(SOFT_BIND) end)
+    RunService:BindToRenderStep(SOFT_BIND, Enum.RenderPriority.Camera.Value + 1, softAimRenderStep)
 end
-local function stopAimbot()
-    State.AimbotEnabled = false; State.aimbotTarget = nil
-    pcall(function() RunService:UnbindFromRenderStep(AIMBOT_BIND) end)
-    destroyFovCircle()
-    local h = getHum()
-    if h and State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil end
+local function stopSoftAim()
+    State.SoftAimEnabled = false
+    pcall(function() RunService:UnbindFromRenderStep(SOFT_BIND) end)
 end
 
 -- ============================================================
--- INPUT AIMBOT — hold key + break on drag
+-- HARD LOCK — snap mutlak
 -- ============================================================
-local AIM_HOLD_KEYS = { [Enum.UserInputType.MouseButton2] = true, [Enum.KeyCode.LeftAlt] = true }
-local AIM_HOLD_GAMEPAD = { [Enum.KeyCode.ButtonL2] = true }
+local function hardLockShouldLock()
+    if not State.HardLockEnabled then return false end
+    if State.HardLockMode == "Selalu Aktif" then return true end
+    return State.hardLockShooting
+end
 
+local function hardLockRenderStep(dt)
+    updateFovCircle()
+    if not State.HardLockEnabled then return end
+    if not hardLockShouldLock() then return end
+
+    State.aimbotFrame = State.aimbotFrame + 1
+    if not State.aimbotTarget or State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
+        if State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
+            State.aimbotFrame = 0
+            State.aimbotTarget = findBestTarget()
+        end
+    end
+    local target = State.aimbotTarget
+    if not target or not target.part or not target.part.Parent then return end
+
+    local camPos = Camera.CFrame.Position
+    local targetPos = target.part.Position
+    if State.AimbotPredict then targetPos = targetPos + target.part.AssemblyLinearVelocity * State.AimbotPredictAmount end
+    Camera.CFrame = CFrame.lookAt(camPos, targetPos)
+end
+
+local function startHardLock()
+    State.HardLockEnabled = true
+    pcall(function() RunService:UnbindFromRenderStep(HARD_BIND) end)
+    RunService:BindToRenderStep(HARD_BIND, Enum.RenderPriority.Camera.Value + 1, hardLockRenderStep)
+end
+local function stopHardLock()
+    State.HardLockEnabled = false
+    pcall(function() RunService:UnbindFromRenderStep(HARD_BIND) end)
+end
+
+-- ============================================================
+-- INPUT — shoot trigger + fov circle
+-- ============================================================
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
-    -- hold-to-aim
-    if AIM_HOLD_KEYS[input.UserInputType] or AIM_HOLD_KEYS[input.KeyCode] or AIM_HOLD_GAMEPAD[input.KeyCode] then
-        State.aimbotHolding = true
-    end
-    -- shoot trigger (mode cuma pas nembak)
     local isShoot = false
     if input.UserInputType == Enum.UserInputType.MouseButton1 then isShoot = true
     elseif input.UserInputType == Enum.UserInputType.Touch then
         local vp = Camera.ViewportSize
         if input.Position.X > vp.X * 0.5 then isShoot = true end
     end
-    if isShoot then State.aimbotShooting = true end
-    -- touch aim hold (drag di kanan layar)
-    if input.UserInputType == Enum.UserInputType.Touch and State.AimbotHoldKey then
-        local vp = Camera.ViewportSize
-        if input.Position.X > vp.X * 0.7 and input.Position.Y > vp.Y * 0.7 then
-            State.aimbotHolding = true
-        end
+    if isShoot then
+        State.softAimShooting = true
+        State.hardLockShooting = true
     end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
-    if AIM_HOLD_KEYS[input.UserInputType] or AIM_HOLD_KEYS[input.KeyCode] or AIM_HOLD_GAMEPAD[input.KeyCode] then
-        State.aimbotHolding = false
-    end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        State.aimbotShooting = false
-    end
-    if input.UserInputType == Enum.UserInputType.Touch then
-        State.aimbotHolding = false
+        State.softAimShooting = false
+        State.hardLockShooting = false
     end
 end)
 
--- break-lock saat geser layar manual (mouse move / touch drag)
-UserInputService.InputChanged:Connect(function(input, processed)
-    if processed then return end
-    if not State.AimbotBreakOnDrag then return end
-    if not State.AimbotEnabled then return end
-    local isDrag = false
-    if input.UserInputType == Enum.UserInputType.MouseMovement then
-        if State.lastMousePos then
-            local delta = (input.Position - State.lastMousePos).Magnitude
-            if delta > 3 then isDrag = true end
-        end
-        State.lastMousePos = input.Position
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        isDrag = true
-    end
-    if isDrag then
-        State.aimbotBreakUntil = os.clock() + State.AimbotBreakCooldown
-        State.aimbotTarget = nil
-    end
-end)
+-- init fov circle
+createFovCircle()
 
 -- ============================================================
 -- TP
@@ -975,52 +957,57 @@ MoveTab:CreateSlider({ Name = "Walk Speed", Range = {16, 300}, Increment = 1, Su
     CurrentValue = 50, Flag = "WalkSpeed",
     Callback = function(v) State.WalkSpeed = v; applySpeed() end })
 
-local AimTab = Window:CreateTab("Aimbot", 4483362458)
-AimTab:CreateSection("Aimbot — Lock Longgar")
-AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aimbot",
-    Callback = function(v) if v then startAimbot() else stopAimbot() end end })
-AimTab:CreateDropdown({
+-- SOFT AIM TAB
+local SoftTab = Window:CreateTab("Soft Aim", 4483362458)
+SoftTab:CreateSection("Soft Aim — Tarik Pelan, Bisa Digeser")
+SoftTab:CreateToggle({ Name = "Enable Soft Aim", CurrentValue = false, Flag = "SoftAim",
+    Callback = function(v) if v then startSoftAim() else stopSoftAim() end end })
+SoftTab:CreateDropdown({
+    Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
+    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "SoftMode",
+    Callback = function(opt) if opt and opt[1] then State.SoftAimMode = opt[1] end end,
+})
+SoftTab:CreateSlider({ Name = "Kekuatan Tarik (kecil = soft)", Range = {0.02, 0.5}, Increment = 0.01,
+    CurrentValue = 0.15, Flag = "SoftStrength",
+    Callback = function(v) State.SoftAimStrength = v end })
+SoftTab:CreateParagraph({ Title = "Info Soft Aim",
+    Content = "Kamera ditarik sebagian ke target tiap frame. Kamu masih bisa geser layar lawan arah. Kekuatan 0.15 = tarik lembut, 0.4 = tarik keras tapi masih bisa dilawan. Beda dari hard lock yang snap mutlak." })
+
+-- HARD LOCK TAB
+local HardTab = Window:CreateTab("Hard Lock", 4483362458)
+HardTab:CreateSection("Hard Lock — Snap Mutlak")
+HardTab:CreateToggle({ Name = "Enable Hard Lock", CurrentValue = false, Flag = "HardLock",
+    Callback = function(v) if v then startHardLock() else stopHardLock() end end })
+HardTab:CreateDropdown({
+    Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
+    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "HardMode",
+    Callback = function(opt) if opt and opt[1] then State.HardLockMode = opt[1] end end,
+})
+HardTab:CreateParagraph({ Title = "Info Hard Lock",
+    Content = "Kamera snap langsung ke target. Nggak bisa digeser selama lock. Pakai kalau mau lock brutal — sama kayak aimbot versi sebelumnya." })
+
+-- AIM COMMON TAB
+local AimCommonTab = Window:CreateTab("Aim Common", 4483362458)
+AimCommonTab:CreateSection("Target & FOV (berlaku buat Soft Aim + Hard Lock)")
+AimCommonTab:CreateDropdown({
     Name = "Target Part", Options = {"Head", "Badan", "Kaki"},
     CurrentOption = {"Head"}, MultipleOptions = false, Flag = "AimPart",
     Callback = function(opt) if opt and opt[1] then State.AimbotTargetPart = opt[1] end end,
 })
-AimTab:CreateDropdown({
-    Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
-    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "AimMode",
-    Callback = function(opt) if opt and opt[1] then State.AimbotMode = opt[1] end end,
-})
-AimTab:CreateToggle({ Name = "Hold To Aim (wajib tahan tombol aim)", CurrentValue = true, Flag = "AimHold",
-    Callback = function(v) State.AimbotHoldKey = v end })
-AimTab:CreateToggle({ Name = "Break Lock Saat Geser Layar", CurrentValue = true, Flag = "AimBreak",
-    Callback = function(v) State.AimbotBreakOnDrag = v end })
-AimTab:CreateSlider({ Name = "Break Cooldown", Range = {0, 3}, Increment = 0.1, Suffix = "s",
-    CurrentValue = 0.6, Flag = "AimBreakCD",
-    Callback = function(v) State.AimbotBreakCooldown = v end })
-AimTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 600}, Increment = 5, Suffix = "px",
+AimCommonTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 600}, Increment = 5, Suffix = "px",
     CurrentValue = 150, Flag = "AimFov",
     Callback = function(v) State.AimbotFov = v end })
-AimTab:CreateSlider({ Name = "Smoothness (0 = snap)", Range = {0, 0.95}, Increment = 0.05,
-    CurrentValue = 0.15, Flag = "AimSmooth",
-    Callback = function(v) State.AimbotSmooth = v end })
-AimTab:CreateToggle({ Name = "Prediction", CurrentValue = true, Flag = "AimPredict",
+AimCommonTab:CreateToggle({ Name = "Prediction", CurrentValue = true, Flag = "AimPredict",
     Callback = function(v) State.AimbotPredict = v end })
-AimTab:CreateSlider({ Name = "Prediction Amount", Range = {0, 0.5}, Increment = 0.02, Suffix = "s",
+AimCommonTab:CreateSlider({ Name = "Prediction Amount", Range = {0, 0.5}, Increment = 0.02, Suffix = "s",
     CurrentValue = 0.12, Flag = "AimPredictAmt",
     Callback = function(v) State.AimbotPredictAmount = v end })
-AimTab:CreateToggle({ Name = "Free Move", CurrentValue = false, Flag = "AimFree",
-    Callback = function(v)
-        State.AimbotFreeMove = v
-        if not v then
-            local h = getHum()
-            if h and State.savedAutoRotate ~= nil then h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil end
-        end
-    end })
-AimTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "AimFovShow",
+AimCommonTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "AimFovShow",
     Callback = function(v) State.AimbotShowFov = v end })
-AimTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 50, 50), Flag = "AimColor",
+AimCommonTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 50, 50), Flag = "AimColor",
     Callback = function(color) State.AimbotColor = color end })
-AimTab:CreateParagraph({ Title = "Kontrol Aim",
-    Content = "PC: tahan RightMouse / LeftAlt buat aim. HP: tahan tombol Aim kanan layar. Geser layar = lock break otomatis (cooldown slider). Smoothness 0.15 = lock longgar, bisa digeser dikit. Naikin kalau masih kaku, turunin ke 0 kalau mau snap." })
+AimCommonTab:CreateParagraph({ Title = "Catatan",
+    Content = "Soft Aim dan Hard Lock pakai target & FOV yang sama. Jangan aktifin dua-duanya barengan — pilih salah satu. Kalau dua-duanya ON, Hard Lock menang karena bind priority sama tapi dieksekusi terakhir." })
 
 local FunTab = Window:CreateTab("Fun", 4483362458)
 FunTab:CreateSection("God Mode")
@@ -1128,4 +1115,4 @@ LocalPlayer.CharacterAdded:Connect(function()
     if State.NoclipEnabled then startNoclip() end
 end)
 
-notify("ByVoid", "No system is safe — aimbot lock longgar")
+notify("ByVoid", "No system is safe — soft aim + hard lock dipisah")
