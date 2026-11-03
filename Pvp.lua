@@ -1,19 +1,17 @@
 --[[
     ByVoid — No system is safe
-    update: AIMBOT BRUTAL
-      - lock paksa via BindToRenderStep (priority Camera + 1)
-      - sticky target (nggak ganti target mid-aim)
-      - prediction velocity (buat target gerak)
-      - snap penuh saat smooth = 0
-      - fallback scan buat char unparent
-      - target part: Head / Badan / Kaki
-      - mode: selalu aktif / cuma pas nembak
-      - free move (WASD jalan, kamera lock)
-      - FOV circle visual
-    semua fitur lama UTUH:
+    update: OPTIMIZED (ringan buat HP)
+      - ESP update 30 FPS (Heartbeat + throttle)
+      - cache getPlayerRoot (scan tiap 5s, bukan tiap frame)
+      - aimbot findBestTarget tiap 3 frame
+      - fallback scan default OFF
+      - low graphics apply sekali + loop 5s
+      - fullbright loop 5s
+      - box 3D update tiap 2 frame
+    fitur UTUH:
       jump tahan, fly HP, speed, ESP brutal, noclip, wallhack glow,
       spinbot, god mode + map support tag, fullbright, low graphics,
-      POV, tp
+      POV, aimbot brutal, tp
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
     absolute ollie, built by olivia
 --]]
@@ -30,6 +28,18 @@ local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 -- ============================================================
+-- PERF SETTINGS
+-- ============================================================
+local PERF = {
+    ESP_HZ = 30,              -- ESP update 30 FPS (bukan 60)
+    ROOT_CACHE_TTL = 5,       -- cache root player 5 detik
+    AIMBOT_TARGET_EVERY = 3,  -- cari target tiap 3 frame
+    BOX3D_EVERY = 2,          -- box 3D update tiap 2 frame
+    FB_LOOP = 5,              -- fullbright re-apply 5 detik
+    LOWGFX_LOOP = 5,          -- low gfx re-apply 5 detik
+}
+
+-- ============================================================
 -- STATE
 -- ============================================================
 local State = {
@@ -38,8 +48,10 @@ local State = {
     SpeedEnabled = false, WalkSpeed = 50, defaultWalkSpeed = 16,
     EspEnabled = false, EspGlow = false, EspLine = false, EspBox = false,
     EspName = false, EspHealth = false, EspDistance = false, EspBox3D = false,
-    EspFallbackScan = true, EspColor = Color3.fromRGB(0, 255, 100), EspMaxDist = 1000,
+    EspFallbackScan = false,   -- DEFAULT OFF
+    EspColor = Color3.fromRGB(0, 255, 100), EspMaxDist = 500,
     espObjects = {}, espScanTick = 0,
+    rootCache = {},            -- [player] = {hrp, char, t}
     NoclipEnabled = false, WallhackGlowEnabled = false,
     WallhackColor = Color3.fromRGB(255, 60, 60),
     wallhackObjects = {}, savedCollide = {}, noclipConn = nil,
@@ -47,13 +59,13 @@ local State = {
     GodModeEnabled = false, godConn = nil, godHealthConn = nil,
     savedHealth = nil, savedMaxHealth = nil,
     godSupportStatus = "belum dites", godTestResult = nil, godTestDone = false,
-    FullbrightEnabled = false, fbConn = nil, fbSaved = nil,
+    FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
-    LowGfxEnabled = false, lowGfxConn = nil, lowGfxSaved = nil,
+    LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
     -- AIMBOT
     AimbotEnabled = false,
     AimbotTargetPart = "Head",
-    AimbotMode = "Selalu Aktif",
+    AimbotMode = "Cuma Pas Nembak",  -- default lebih ringan
     AimbotFov = 150,
     AimbotSmooth = 0,
     AimbotPredict = true,
@@ -61,16 +73,16 @@ local State = {
     AimbotFreeMove = false,
     AimbotShowFov = true,
     AimbotColor = Color3.fromRGB(255, 50, 50),
-    aimbotTarget = nil,
-    aimbotShooting = false,
+    aimbotTarget = nil, aimbotShooting = false, aimbotFrame = 0,
     fovCircle = nil,
     savedAutoRotate = nil,
-    -- tp
     SelectedPlayer = nil,
 }
 
 local GodSupportLabel = nil
 local AIMBOT_BIND = "ByVoidAimbotRender"
+local lastESPUpdate = 0
+local box3DFrame = 0
 
 -- ============================================================
 -- UTILS
@@ -88,20 +100,39 @@ local function notify(t, c)
     Rayfield:Notify({ Title = t, Content = c, Duration = 4 })
 end
 
+-- cached root: jangan scan workspace tiap frame
 local function getPlayerRoot(p)
+    local now = os.clock()
+    local c = State.rootCache[p]
+    if c and (now - c.t) < PERF.ROOT_CACHE_TTL then
+        if c.hrp and c.hrp.Parent then return c.hrp, c.char end
+        if c.char and c.char.Parent then
+            local hrp = c.char:FindFirstChild("HumanoidRootPart")
+            if hrp then return hrp, c.char end
+        end
+    end
+    -- refresh cache
     local char = p.Character
     if char then
         local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then return hrp, char end
+        if hrp then
+            State.rootCache[p] = { hrp = hrp, char = char, t = now }
+            return hrp, char
+        end
     end
+    -- fallback scan cuma kalau toggle ON
     if State.EspFallbackScan then
         for _, d in ipairs(Workspace:GetDescendants()) do
             if d:IsA("Humanoid") and d.Parent and d.Parent.Name == p.Name then
                 local hrp = d.Parent:FindFirstChild("HumanoidRootPart")
-                if hrp then return hrp, d.Parent end
+                if hrp then
+                    State.rootCache[p] = { hrp = hrp, char = d.Parent, t = now }
+                    return hrp, d.Parent
+                end
             end
         end
     end
+    State.rootCache[p] = { hrp = nil, char = nil, t = now }
     return nil, nil
 end
 
@@ -111,7 +142,7 @@ local function setGodSupportLabel(txt)
 end
 
 -- ============================================================
--- 1. MULTI JUMP — TAHAN
+-- 1. MULTI JUMP
 -- ============================================================
 local jumpHolding = false
 local jumpHoldThread = nil
@@ -215,7 +246,7 @@ local function startFly()
     bg.P = 9000; bg.D = 500; bg.Parent = hrp
     State.flyBG = bg
     hum.PlatformStand = true
-    State.flyConn = RunService.RenderStepped:Connect(function()
+    State.flyConn = RunService.Heartbeat:Connect(function()
         if not State.FlyEnabled then return end
         local hrp2 = getHRP(); local hum2 = getHum()
         if not hrp2 or not hum2 or hum2.Health <= 0 then stopFly(); return end
@@ -242,7 +273,7 @@ local function applySpeed()
 end
 
 -- ============================================================
--- 4. ESP BRUTAL
+-- 4. ESP (optimized)
 -- ============================================================
 local function removeESP(p)
     local obj = State.espObjects[p]
@@ -260,6 +291,7 @@ end
 local function clearAllESP()
     for p, _ in pairs(State.espObjects) do removeESP(p) end
     State.espObjects = {}
+    State.rootCache = {}
 end
 
 local function createESP(p)
@@ -379,8 +411,14 @@ end
 
 local function updateESP()
     if not State.EspEnabled then return end
+
+    -- throttle ke PERF.ESP_HZ
+    local now = os.clock()
+    if now - lastESPUpdate < (1 / PERF.ESP_HZ) then return end
+    lastESPUpdate = now
+
     State.espScanTick = State.espScanTick + 1
-    if State.espScanTick >= 60 then
+    if State.espScanTick >= PERF.ESP_HZ * 2 then  -- scan player baru tiap 2s
         State.espScanTick = 0
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer and not State.espObjects[p] then
@@ -389,6 +427,9 @@ local function updateESP()
             end
         end
     end
+
+    box3DFrame = box3DFrame + 1
+    local updateBox3D = (box3DFrame % PERF.BOX3D_EVERY == 0)
 
     local myHRP = getHRP()
     local myPos = myHRP and myHRP.Position or Vector3.zero
@@ -423,7 +464,7 @@ local function updateESP()
         end
         if obj.nameLabel then
             obj.nameLabel.Visible = State.EspName and inRange
-            obj.nameLabel.TextColor3 = State.EspColor; obj.nameLabel.Text = p.Name
+            obj.nameLabel.TextColor3 = State.EspColor
         end
         if obj.distLabel then
             obj.distLabel.Visible = State.EspDistance and inRange
@@ -467,8 +508,8 @@ local function updateESP()
             else for _, l in ipairs(obj.boxLines) do l.Visible = false end end
         end
         if #obj.box3DLines == 12 then
-            if State.EspBox3D and inRange then drawBox3D(obj, hrp)
-            else for _, l in ipairs(obj.box3DLines) do l.Visible = false end end
+            if State.EspBox3D and inRange and updateBox3D then drawBox3D(obj, hrp)
+            elseif not State.EspBox3D then for _, l in ipairs(obj.box3DLines) do l.Visible = false end end
         end
     end
 end
@@ -478,14 +519,15 @@ local function setupPlayerESP(p)
     if State.EspEnabled then createESP(p) end
     p.CharacterAdded:Connect(function()
         task.wait(0.5)
+        State.rootCache[p] = nil
         removeESP(p)
         if State.EspEnabled then createESP(p) end
     end)
 end
 for _, p in ipairs(Players:GetPlayers()) do setupPlayerESP(p) end
 Players.PlayerAdded:Connect(setupPlayerESP)
-Players.PlayerRemoving:Connect(removeESP)
-RunService.RenderStepped:Connect(updateESP)
+Players.PlayerRemoving:Connect(function(p) removeESP(p); State.rootCache[p] = nil end)
+RunService.Heartbeat:Connect(updateESP)  -- Heartbeat, bukan RenderStepped
 
 -- ============================================================
 -- 5A. NOCLIP
@@ -579,7 +621,7 @@ local function startSpinBot()
     if State.spinConn then State.spinConn:Disconnect() end
     State.SpinBotEnabled = true
     local angle = 0
-    State.spinConn = RunService.RenderStepped:Connect(function(dt)
+    State.spinConn = RunService.Heartbeat:Connect(function(dt)
         if not State.SpinBotEnabled then return end
         local hrp = getHRP()
         if not hrp then return end
@@ -595,7 +637,7 @@ local function stopSpinBot()
 end
 
 -- ============================================================
--- 5D. GOD MODE + MAP SUPPORT
+-- 5D. GOD MODE
 -- ============================================================
 local function runGodModeTest()
     setGodSupportLabel("testing...")
@@ -639,11 +681,11 @@ local function runGodModeTest()
         if healedBack then score = score + 1 end
 
         local txt
-        if score >= 4 then txt = "SUPPORT PENUH (4/4) — god mode jalan"
-        elseif score == 3 then txt = "SUPPORT TINGGI (3/4) — damage sesaat mungkin"
-        elseif score == 2 then txt = "SUPPORT PARSIAL (2/4) — bisa bolong kalau server reset"
-        elseif score == 1 then txt = "SUPPORT RENDAH (1/4) — server-authoritative"
-        else txt = "TIDAK SUPPORT (0/4) — game kunci health" end
+        if score >= 4 then txt = "SUPPORT PENUH (4/4)"
+        elseif score == 3 then txt = "SUPPORT TINGGI (3/4)"
+        elseif score == 2 then txt = "SUPPORT PARSIAL (2/4)"
+        elseif score == 1 then txt = "SUPPORT RENDAH (1/4)"
+        else txt = "TIDAK SUPPORT (0/4)" end
         setGodSupportLabel(txt)
         State.godTestDone = true
         State.godTestResult = score
@@ -715,7 +757,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ============================================================
--- 5E. FULLBRIGHT
+-- 5E. FULLBRIGHT (apply sekali + loop 5s)
 -- ============================================================
 local function saveLighting()
     State.fbSaved = {
@@ -742,17 +784,17 @@ local function startFullbright()
     if not State.fbSaved then saveLighting() end
     State.FullbrightEnabled = true
     applyFullbright()
-    if State.fbConn then pcall(function() task.cancel(State.fbConn) end); State.fbConn = nil end
-    State.fbConn = task.spawn(function()
+    if State.fbThread then pcall(function() task.cancel(State.fbThread) end); State.fbThread = nil end
+    State.fbThread = task.spawn(function()
         while State.FullbrightEnabled do
-            task.wait(2)
+            task.wait(PERF.FB_LOOP)
             if State.FullbrightEnabled then applyFullbright() end
         end
     end)
 end
 local function stopFullbright()
     State.FullbrightEnabled = false
-    if State.fbConn then pcall(function() task.cancel(State.fbConn) end); State.fbConn = nil end
+    if State.fbThread then pcall(function() task.cancel(State.fbThread) end); State.fbThread = nil end
     restoreLighting()
 end
 
@@ -770,7 +812,7 @@ Camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
 end)
 
 -- ============================================================
--- 5G. LOW GRAPHICS
+-- 5G. LOW GRAPHICS (apply sekali + loop 5s)
 -- ============================================================
 local function saveLowGfx()
     State.lowGfxSaved = {
@@ -792,13 +834,6 @@ local function applyLowGfx()
     end)
     Lighting.GlobalShadows = false
     Lighting.FogEnd = 1e6
-    pcall(function()
-        for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("ParticleEmitter") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
-                d.Enabled = false
-            end
-        end
-    end)
 end
 local function restoreLowGfx()
     if not State.lowGfxSaved then return end
@@ -811,97 +846,65 @@ local function restoreLowGfx()
     end)
     Lighting.GlobalShadows = State.lowGfxSaved.GlobalShadows
     Lighting.FogEnd = State.lowGfxSaved.LightingFogEnd
-    pcall(function()
-        for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("ParticleEmitter") or d:IsA("Smoke") or d:IsA("Fire") or d:IsA("Sparkles") then
-                d.Enabled = true
-            end
-        end
-    end)
     State.lowGfxSaved = nil
 end
 local function startLowGfx()
     if not State.lowGfxSaved then saveLowGfx() end
     State.LowGfxEnabled = true
     applyLowGfx()
-    if State.lowGfxConn then pcall(function() task.cancel(State.lowGfxConn) end); State.lowGfxConn = nil end
-    State.lowGfxConn = task.spawn(function()
+    if State.lowGfxThread then pcall(function() task.cancel(State.lowGfxThread) end); State.lowGfxThread = nil end
+    State.lowGfxThread = task.spawn(function()
         while State.LowGfxEnabled do
-            task.wait(3)
+            task.wait(PERF.LOWGFX_LOOP)
             if State.LowGfxEnabled then applyLowGfx() end
         end
     end)
 end
 local function stopLowGfx()
     State.LowGfxEnabled = false
-    if State.lowGfxConn then pcall(function() task.cancel(State.lowGfxConn) end); State.lowGfxConn = nil end
+    if State.lowGfxThread then pcall(function() task.cancel(State.lowGfxThread) end); State.lowGfxThread = nil end
     restoreLowGfx()
 end
 
 -- ============================================================
--- 5H. AIMBOT BRUTAL — lock paksa
+-- 5H. AIMBOT (optimized)
 -- ============================================================
 local function getTargetPart(char)
     if not char then return nil end
-    if State.AimbotTargetPart == "Head" then
-        return char:FindFirstChild("Head")
+    if State.AimbotTargetPart == "Head" then return char:FindFirstChild("Head")
     elseif State.AimbotTargetPart == "Badan" then
-        return char:FindFirstChild("UpperTorso")
-            or char:FindFirstChild("Torso")
-            or char:FindFirstChild("HumanoidRootPart")
+        return char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
     elseif State.AimbotTargetPart == "Kaki" then
-        return char:FindFirstChild("LeftFoot")
-            or char:FindFirstChild("RightFoot")
-            or char:FindFirstChild("LeftLeg")
-            or char:FindFirstChild("RightLeg")
+        return char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot") or char:FindFirstChild("LeftLeg") or char:FindFirstChild("RightLeg")
     end
     return char:FindFirstChild("Head")
 end
 
-local function getCharForTarget(p)
-    local char = p.Character
-    if char and char:FindFirstChildOfClass("Humanoid") then return char end
-    -- fallback scan
-    if State.EspFallbackScan then
-        for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("Humanoid") and d.Parent and d.Parent.Name == p.Name then
-                return d.Parent
-            end
-        end
-    end
-    return nil
-end
-
--- sticky target: kalau target lama masih di FOV & hidup, pakai itu
 local function findBestTarget()
     local vp = Camera.ViewportSize
     local center = Vector2.new(vp.X / 2, vp.Y / 2)
 
-    -- cek target lama dulu
     if State.aimbotTarget and State.aimbotTarget.player then
         local p = State.aimbotTarget.player
         if p.Parent then
-            local char = getCharForTarget(p)
+            local hrp, char = getPlayerRoot(p)
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             local part = char and getTargetPart(char)
             if part and hum and hum.Health > 0 then
                 local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
                 if onScreen then
                     local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= State.AimbotFov then
-                        return { player = p, part = part }
-                    end
+                    if d <= State.AimbotFov then return { player = p, part = part } end
                 end
             end
         end
         State.aimbotTarget = nil
     end
 
-    -- scan baru
     local best, bestDist = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
-            local char = getCharForTarget(p)
+            local hrp, char = getPlayerRoot(p)
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             local part = char and getTargetPart(char)
             if part and hum and hum.Health > 0 then
@@ -909,8 +912,7 @@ local function findBestTarget()
                 if onScreen then
                     local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
                     if d <= State.AimbotFov and d < bestDist then
-                        bestDist = d
-                        best = { player = p, part = part }
+                        bestDist = d; best = { player = p, part = part }
                     end
                 end
             end
@@ -920,22 +922,16 @@ local function findBestTarget()
 end
 
 local function destroyFovCircle()
-    if State.fovCircle then
-        pcall(function() State.fovCircle:Remove() end)
-        State.fovCircle = nil
-    end
+    if State.fovCircle then pcall(function() State.fovCircle:Remove() end); State.fovCircle = nil end
 end
 
 local function createFovCircle()
     destroyFovCircle()
     local ok, circle = pcall(function() return Drawing.new("Circle") end)
     if ok and circle then
-        circle.Thickness = 1.5
-        circle.NumSides = 64
-        circle.Color = State.AimbotColor
-        circle.Filled = false
-        circle.Transparency = 0.85
-        circle.Visible = false
+        circle.Thickness = 1.5; circle.NumSides = 64
+        circle.Color = State.AimbotColor; circle.Filled = false
+        circle.Transparency = 0.85; circle.Visible = false
         State.fovCircle = circle
     end
 end
@@ -947,9 +943,7 @@ local function updateFovCircle()
         State.fovCircle.Radius = State.AimbotFov
         State.fovCircle.Color = State.AimbotColor
         State.fovCircle.Visible = true
-    else
-        State.fovCircle.Visible = false
-    end
+    else State.fovCircle.Visible = false end
 end
 
 local function aimbotShouldLock()
@@ -958,27 +952,30 @@ local function aimbotShouldLock()
     return State.aimbotShooting
 end
 
--- BindToRenderStep setelah Camera update — override kamera default
 local function aimbotRenderStep(dt)
     updateFovCircle()
     if not State.AimbotEnabled then return end
 
     if not aimbotShouldLock() then
         State.aimbotTarget = nil
-        -- restore auto rotate pas nggak lock
         local h = getHum()
         if h and State.savedAutoRotate ~= nil then
-            h.AutoRotate = State.savedAutoRotate
-            State.savedAutoRotate = nil
+            h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil
         end
         return
     end
 
-    local target = findBestTarget()
-    State.aimbotTarget = target
+    -- throttle target scan
+    State.aimbotFrame = State.aimbotFrame + 1
+    if not State.aimbotTarget or State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
+        if State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
+            State.aimbotFrame = 0
+            State.aimbotTarget = findBestTarget()
+        end
+    end
+    local target = State.aimbotTarget
     if not target or not target.part or not target.part.Parent then return end
 
-    -- free move: AutoRotate off selama lock
     local h = getHum()
     if h then
         if State.AimbotFreeMove then
@@ -986,23 +983,17 @@ local function aimbotRenderStep(dt)
             h.AutoRotate = false
         else
             if State.savedAutoRotate ~= nil then
-                h.AutoRotate = State.savedAutoRotate
-                State.savedAutoRotate = nil
+                h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil
             end
         end
     end
 
-    -- hitung posisi target + prediction
     local camPos = Camera.CFrame.Position
     local targetPos = target.part.Position
     if State.AimbotPredict then
-        local vel = target.part.AssemblyLinearVelocity
-        targetPos = targetPos + vel * State.AimbotPredictAmount
+        targetPos = targetPos + target.part.AssemblyLinearVelocity * State.AimbotPredictAmount
     end
-
     local desired = CFrame.lookAt(camPos, targetPos)
-
-    -- alpha: 1 = snap penuh, kecil = smooth
     if State.AimbotSmooth <= 0.01 then
         Camera.CFrame = desired
     else
@@ -1013,33 +1004,27 @@ end
 
 local function startAimbot()
     State.AimbotEnabled = true
+    State.aimbotTarget = nil; State.aimbotFrame = 0
     createFovCircle()
-    pcall(function()
-        RunService:UnbindFromRenderStep(AIMBOT_BIND)
-    end)
+    pcall(function() RunService:UnbindFromRenderStep(AIMBOT_BIND) end)
     RunService:BindToRenderStep(AIMBOT_BIND, Enum.RenderPriority.Camera.Value + 1, aimbotRenderStep)
 end
 
 local function stopAimbot()
     State.AimbotEnabled = false
     State.aimbotTarget = nil
-    pcall(function()
-        RunService:UnbindFromRenderStep(AIMBOT_BIND)
-    end)
+    pcall(function() RunService:UnbindFromRenderStep(AIMBOT_BIND) end)
     destroyFovCircle()
     local h = getHum()
     if h and State.savedAutoRotate ~= nil then
-        h.AutoRotate = State.savedAutoRotate
-        State.savedAutoRotate = nil
+        h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil
     end
 end
 
--- trigger nembak: mouse1 / touch kanan layar
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
     local isShoot = false
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        isShoot = true
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then isShoot = true
     elseif input.UserInputType == Enum.UserInputType.Touch then
         local vp = Camera.ViewportSize
         if input.Position.X > vp.X * 0.5 then isShoot = true end
@@ -1148,28 +1133,27 @@ AimTab:CreateDropdown({
 })
 AimTab:CreateDropdown({
     Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
-    CurrentOption = {"Selalu Aktif"}, MultipleOptions = false, Flag = "AimMode",
+    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "AimMode",
     Callback = function(opt) if opt and opt[1] then State.AimbotMode = opt[1] end end,
 })
 AimTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 600}, Increment = 5, Suffix = "px",
     CurrentValue = 150, Flag = "AimFov",
     Callback = function(v) State.AimbotFov = v end })
-AimTab:CreateSlider({ Name = "Smoothness (0 = snap penuh)", Range = {0, 0.95}, Increment = 0.05,
+AimTab:CreateSlider({ Name = "Smoothness (0 = snap)", Range = {0, 0.95}, Increment = 0.05,
     CurrentValue = 0, Flag = "AimSmooth",
     Callback = function(v) State.AimbotSmooth = v end })
-AimTab:CreateToggle({ Name = "Prediction (target gerak)", CurrentValue = true, Flag = "AimPredict",
+AimTab:CreateToggle({ Name = "Prediction", CurrentValue = true, Flag = "AimPredict",
     Callback = function(v) State.AimbotPredict = v end })
 AimTab:CreateSlider({ Name = "Prediction Amount", Range = {0, 0.5}, Increment = 0.02, Suffix = "s",
     CurrentValue = 0.12, Flag = "AimPredictAmt",
     Callback = function(v) State.AimbotPredictAmount = v end })
-AimTab:CreateToggle({ Name = "Free Move (gerak bebas, kamera lock)", CurrentValue = false, Flag = "AimFree",
+AimTab:CreateToggle({ Name = "Free Move", CurrentValue = false, Flag = "AimFree",
     Callback = function(v)
         State.AimbotFreeMove = v
         if not v then
             local h = getHum()
             if h and State.savedAutoRotate ~= nil then
-                h.AutoRotate = State.savedAutoRotate
-                State.savedAutoRotate = nil
+                h.AutoRotate = State.savedAutoRotate; State.savedAutoRotate = nil
             end
         end
     end })
@@ -1177,16 +1161,16 @@ AimTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "Aim
     Callback = function(v) State.AimbotShowFov = v end })
 AimTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 50, 50), Flag = "AimColor",
     Callback = function(color) State.AimbotColor = color end })
-AimTab:CreateParagraph({ Title = "Info Aimbot",
-    Content = "Lock paksa via BindToRenderStep priority Camera+1 — override camera script default. Sticky target nggak ganti mid-aim. Efek nembak tergantung game: kamera client → ngefek. Server-authoritative → visual doang." })
+AimTab:CreateParagraph({ Title = "Info Optimized",
+    Content = "Target di-scan tiap 3 frame (bukan tiap frame). Mode default 'Cuma Pas Nembak' biar ringan. FOV circle tetap update tiap frame buat visual." })
 
 -- FUN
 local FunTab = Window:CreateTab("Fun", 4483362458)
-FunTab:CreateSection("God Mode (Kebal Mati)")
+FunTab:CreateSection("God Mode")
 FunTab:CreateToggle({ Name = "Enable God Mode", CurrentValue = false, Flag = "God",
     Callback = function(v) if v then startGodMode() else stopGodMode() end end })
 GodSupportLabel = FunTab:CreateLabel("Map Support: belum dites")
-FunTab:CreateButton({ Name = "Test Map Support Sekarang", Callback = function()
+FunTab:CreateButton({ Name = "Test Map Support", Callback = function()
     if not State.GodModeEnabled then notify("ByVoid", "aktifkan God Mode dulu"); return end
     State.godTestDone = false
     runGodModeTest()
@@ -1206,7 +1190,7 @@ VisualTab:CreateSlider({ Name = "FOV Value", Range = {10, 120}, Increment = 1, S
     CurrentValue = 70, Flag = "PovVal",
     Callback = function(v) State.PovValue = v; applyPov() end })
 
-VisualTab:CreateSection("ESP (Default OFF)")
+VisualTab:CreateSection("ESP (Default OFF — Optimized)")
 VisualTab:CreateToggle({ Name = "Enable ESP", CurrentValue = false, Flag = "ESP",
     Callback = function(v)
         State.EspEnabled = v
@@ -1219,11 +1203,11 @@ VisualTab:CreateToggle({ Name = "Enable ESP", CurrentValue = false, Flag = "ESP"
     end })
 VisualTab:CreateToggle({ Name = "ESP Glow", CurrentValue = false, Flag = "ESPGlow",
     Callback = function(v) State.EspGlow = v; if State.EspEnabled then rebuildAllESP() end end })
-VisualTab:CreateToggle({ Name = "ESP Line (dari atas)", CurrentValue = false, Flag = "ESPLine",
+VisualTab:CreateToggle({ Name = "ESP Line", CurrentValue = false, Flag = "ESPLine",
     Callback = function(v) State.EspLine = v; if State.EspEnabled then rebuildAllESP() end end })
 VisualTab:CreateToggle({ Name = "ESP Box 2D", CurrentValue = false, Flag = "ESPBox",
     Callback = function(v) State.EspBox = v; if State.EspEnabled then rebuildAllESP() end end })
-VisualTab:CreateToggle({ Name = "ESP Box 3D", CurrentValue = false, Flag = "ESPBox3D",
+VisualTab:CreateToggle({ Name = "ESP Box 3D (berat)", CurrentValue = false, Flag = "ESPBox3D",
     Callback = function(v) State.EspBox3D = v; if State.EspEnabled then rebuildAllESP() end end })
 VisualTab:CreateToggle({ Name = "ESP Nama", CurrentValue = false, Flag = "ESPName",
     Callback = function(v) State.EspName = v; if State.EspEnabled then rebuildAllESP() end end })
@@ -1231,10 +1215,10 @@ VisualTab:CreateToggle({ Name = "ESP Distance", CurrentValue = false, Flag = "ES
     Callback = function(v) State.EspDistance = v; if State.EspEnabled then rebuildAllESP() end end })
 VisualTab:CreateToggle({ Name = "ESP Health Bar", CurrentValue = false, Flag = "ESPHealth",
     Callback = function(v) State.EspHealth = v; if State.EspEnabled then rebuildAllESP() end end })
-VisualTab:CreateToggle({ Name = "ESP Fallback Scan", CurrentValue = true, Flag = "ESPScan",
-    Callback = function(v) State.EspFallbackScan = v end })
-VisualTab:CreateSlider({ Name = "ESP Max Distance", Range = {50, 5000}, Increment = 50, Suffix = "studs",
-    CurrentValue = 1000, Flag = "ESPDist", Callback = function(v) State.EspMaxDist = v end })
+VisualTab:CreateToggle({ Name = "ESP Fallback Scan (berat)", CurrentValue = false, Flag = "ESPScan",
+    Callback = function(v) State.EspFallbackScan = v; State.rootCache = {} end })
+VisualTab:CreateSlider({ Name = "ESP Max Distance", Range = {50, 3000}, Increment = 50, Suffix = "studs",
+    CurrentValue = 500, Flag = "ESPDist", Callback = function(v) State.EspMaxDist = v end })
 VisualTab:CreateColorPicker({ Name = "ESP Color", Color = Color3.fromRGB(0, 255, 100), Flag = "ESPColor",
     Callback = function(color)
         State.EspColor = color
@@ -1254,10 +1238,10 @@ VisualTab:CreateToggle({ Name = "Enable Fullbright", CurrentValue = false, Flag 
 VisualTab:CreateToggle({ Name = "Enable Low Graphics", CurrentValue = false, Flag = "LowGfx",
     Callback = function(v) if v then startLowGfx() else stopLowGfx() end end })
 
-VisualTab:CreateSection("Wallhack (Dipisah)")
-VisualTab:CreateToggle({ Name = "Wallhack Noclip (Tembus Semua)", CurrentValue = false, Flag = "Noclip",
+VisualTab:CreateSection("Wallhack")
+VisualTab:CreateToggle({ Name = "Wallhack Noclip", CurrentValue = false, Flag = "Noclip",
     Callback = function(v) State.NoclipEnabled = v; if v then startNoclip() else stopNoclip() end end })
-VisualTab:CreateToggle({ Name = "Wallhack Glow (Visual)", CurrentValue = false, Flag = "WHGlow",
+VisualTab:CreateToggle({ Name = "Wallhack Glow", CurrentValue = false, Flag = "WHGlow",
     Callback = function(v) State.WallhackGlowEnabled = v
         if v then applyAllWallhackGlow() else clearAllWallhackGlow() end end })
 VisualTab:CreateColorPicker({ Name = "Wallhack Glow Color", Color = Color3.fromRGB(255, 60, 60), Flag = "WHColor",
@@ -1298,7 +1282,8 @@ LocalPlayer.CharacterAdded:Connect(function()
     applySpeed()
     State.savedCollide = {}
     State.savedAutoRotate = nil
+    State.rootCache = {}
     if State.NoclipEnabled then startNoclip() end
 end)
 
-notify("ByVoid", "No system is safe — brutal aimbot locked & loaded")
+notify("ByVoid", "No system is safe — optimized v4.7 loaded")
