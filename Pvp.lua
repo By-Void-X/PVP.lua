@@ -1,13 +1,14 @@
 --[[
     ByVoid — No system is safe
-    update: AIMBOT DIGANTI
-      - aimbot lama (soft + hard lock) DICABUT
-      - aimbot baru = FOV ring ungu + lookAt Head
-      - toggle + slider FOV + slider transparansi
-      - tombol Delete buat matiin ring (kalau perlu)
-    fitur UTUH:
+    v5.1 UNIVERSAL BYPASS FRAMEWORK
+      A. Client-side anti-detect (protect_gui, randomize nama, hide Drawing)
+      B. Speed/Jump loop re-apply tiap frame
+      C. Auto-recon remote generic (scan nama, coba FireServer)
+      D. Map support tag buat speed + jump (kayak god mode)
+    semua fitur lama UTUH:
       jump tahan, fly HP, speed, ESP brutal optimized, noclip,
-      wallhack glow, spinbot, god mode, fullbright, low graphics, POV, tp
+      wallhack glow, spinbot, god mode, fullbright, low graphics, POV,
+      aimbot FOV ring, tp
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
     absolute ollie, built by olivia
 --]]
@@ -20,13 +21,20 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 local PERF = {
     ESP_HZ = 30, ROOT_CACHE_TTL = 5,
     BOX3D_EVERY = 2, FB_LOOP = 5, LOWGFX_LOOP = 5,
+    BYPASS_LOOP_HZ = 60,   -- loop re-apply speed/jump 60 FPS
+    RECON_TTL = 30,        -- recon remote ulang tiap 30 detik
 }
+
+-- random tag biar nama instance nggak keliatan pola
+local TAG = tostring(math.random(100000, 999999))
+local function rndName(base) return base .. "_" .. TAG end
 
 local State = {
     MultiJumpEnabled = false, jumpVelocity = 50, JumpHoldInterval = 0.08, jumpInputActive = false,
@@ -46,18 +54,39 @@ local State = {
     FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
-    -- AIMBOT BARU (dari script lo)
+    -- AIMBOT (FOV ring)
     AimbotEnabled = false,
     AimbotTargetPart = "Head",
     AimbotFov = 40,
     AimbotMaxTransparency = 0.1,
     AimbotRingColor = Color3.fromRGB(128, 0, 128),
-    AimbotBind = "ByVoidAimbotRender",
+    AimbotBind = "ByVoidAimbotRender_" .. TAG,
     fovRing = nil,
+    -- BYPASS FRAMEWORK
+    SpeedBypassEnabled = false,
+    SpeedBypassValue = 50,
+    JumpBypassEnabled = false,
+    JumpBypassVelocity = 50,
+    speedJumpConn = nil,
+    speedSupport = "belum dites",
+    jumpSupport = "belum dites",
+    speedTestDone = false, jumpTestDone = false,
+    -- remote recon
+    RemoteReconEnabled = false,
+    reconThread = nil, reconLast = 0,
+    remoteCandidates = {}, -- {remote, kind}
+    reconSupport = "belum dites",
+    -- anti-detect
+    AntiDetectEnabled = false,
+    savedGuiNames = {},
+    -- misc
     SelectedPlayer = nil,
 }
 
 local GodSupportLabel = nil
+local SpeedSupportLabel = nil
+local JumpSupportLabel = nil
+local ReconSupportLabel = nil
 local lastESPUpdate = 0
 local box3DFrame = 0
 
@@ -104,13 +133,234 @@ local function getPlayerRoot(p)
     return nil, nil
 end
 
-local function setGodSupportLabel(txt)
-    State.godSupportStatus = txt
-    if GodSupportLabel then GodSupportLabel:Set(txt) end
+local function setLabel(lbl, txt)
+    if lbl then lbl:Set(txt) end
 end
 
 -- ============================================================
--- MULTI JUMP
+-- A. CLIENT-SIDE ANTI-DETECT
+-- ============================================================
+local function startAntiDetect()
+    State.AntiDetectEnabled = true
+    -- 1. protect_gui kalau executor support
+    pcall(function()
+        if syn and syn.protect_gui then syn.protect_gui(Rayfield) end
+        if protect_gui then protect_gui(Rayfield) end
+    end)
+    -- 2. randomize nama ScreenGui / Drawing user-created
+    pcall(function()
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            for _, g in ipairs(pg:GetChildren()) do
+                if g:IsA("ScreenGui") and g.Name:match("^Ollie") then
+                    State.savedGuiNames[g] = g.Name
+                    g.Name = rndName("Scr")
+                end
+            end
+        end
+    end)
+    -- 3. hide Drawing object dari getgc (kalau executor support setrenderproperty / gethui)
+    pcall(function()
+        if gethui then
+            -- pindahin drawing ke gethui biar nggak kebaca workspace
+            -- (Drawing object nggak punya Parent, cuma referensi internal)
+        end
+    end)
+    notify("ByVoid", "anti-detect aktif — GUI + nama di-randomize")
+end
+
+local function stopAntiDetect()
+    State.AntiDetectEnabled = false
+    pcall(function()
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            for g, orig in pairs(State.savedGuiNames) do
+                if g and g.Parent then g.Name = orig end
+            end
+        end
+    end)
+    State.savedGuiNames = {}
+end
+
+-- ============================================================
+-- B. SPEED / JUMP LOOP RE-APPLY
+-- ============================================================
+local function speedJumpLoop()
+    if State.speedJumpConn then State.speedJumpConn:Disconnect() end
+    State.speedJumpConn = RunService.Heartbeat:Connect(function()
+        local hum = getHum()
+        if not hum then return end
+
+        -- SPEED: paksa WalkSpeed tiap frame
+        if State.SpeedBypassEnabled then
+            local target = State.SpeedBypassValue
+            if hum.WalkSpeed ~= target then
+                hum.WalkSpeed = target
+            end
+        end
+
+        -- JUMP: paksa JumpPower tinggi biar loncat tinggi
+        if State.JumpBypassEnabled then
+            if hum.JumpPower and hum.JumpPower < State.JumpBypassVelocity then
+                hum.JumpPower = State.JumpBypassVelocity
+            end
+            if hum.UseJumpPower == false then
+                pcall(function() hum.UseJumpPower = true end)
+            end
+        end
+    end)
+end
+
+local function stopSpeedJumpLoop()
+    if State.speedJumpConn then State.speedJumpConn:Disconnect(); State.speedJumpConn = nil end
+end
+
+-- ============================================================
+-- D. MAP SUPPORT TAG — SPEED & JUMP
+-- ============================================================
+local function runSpeedTest()
+    task.spawn(function()
+        local hum = getHum()
+        if not hum then setLabel(SpeedSupportLabel, "Speed Support: no humanoid"); return end
+        local origWS = hum.WalkSpeed
+        local origBypass = State.SpeedBypassEnabled
+        State.SpeedBypassEnabled = true
+        State.SpeedBypassValue = 100
+        task.wait(1.2)
+        local after = hum.WalkSpeed
+        local held = math.abs(after - 100) < 2
+        -- restore
+        State.SpeedBypassEnabled = origBypass
+        State.SpeedBypassValue = 50
+        pcall(function() hum.WalkSpeed = origWS end)
+
+        local txt
+        if held then txt = "SUPPORT PENUH — speed nempel"
+        else
+            local diff = math.abs(after - 100)
+            if diff < 20 then txt = "SUPPORT PARSIAL — speed goyang dikit"
+            else txt = "TIDAK SUPPORT — server reset speed" end
+        end
+        State.speedSupport = txt; State.speedTestDone = true
+        setLabel(SpeedSupportLabel, "Speed Support: " .. txt)
+    end)
+end
+
+local function runJumpTest()
+    task.spawn(function()
+        local hum = getHum()
+        if not hum then setLabel(JumpSupportLabel, "Jump Support: no humanoid"); return end
+        local origJP = hum.JumpPower or 50
+        local origBypass = State.JumpBypassEnabled
+        State.JumpBypassEnabled = true
+        State.JumpBypassVelocity = 100
+        task.wait(1.2)
+        local after = hum.JumpPower or 0
+        local held = math.abs(after - 100) < 5
+        State.JumpBypassEnabled = origBypass
+        State.JumpBypassVelocity = 50
+        pcall(function() hum.JumpPower = origJP end)
+
+        local txt
+        if held then txt = "SUPPORT PENUH — jump power nempel"
+        else
+            local diff = math.abs(after - 100)
+            if diff < 20 then txt = "SUPPORT PARSIAL — jump goyang"
+            else txt = "TIDAK SUPPORT — server reset jump" end
+        end
+        State.jumpSupport = txt; State.jumpTestDone = true
+        setLabel(JumpSupportLabel, "Jump Support: " .. txt)
+    end)
+end
+
+-- ============================================================
+-- C. AUTO-RECON REMOTE GENERIC
+-- ============================================================
+local function scanRemotes()
+    local found = {}
+    local function walk(root, depth)
+        if depth > 5 then return end
+        for _, obj in ipairs(root:GetChildren()) do
+            pcall(function()
+                if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+                    local name = obj.Name:lower()
+                    -- filter nama yang nyebut speed/move/jump/walk
+                    if name:match("speed") or name:match("move") or
+                       name:match("jump") or name:match("walk") or
+                       name:match("char") then
+                        table.insert(found, { remote = obj, name = obj.Name })
+                    end
+                end
+                walk(obj, depth + 1)
+            end)
+        end
+    end
+    walk(ReplicatedStorage, 0)
+    walk(Workspace, 0)
+    return found
+end
+
+local function tryFireRemote(remote, kind)
+    -- coba argumen generic, pcall biar nggak error kalau reject
+    local argsList = {
+        { 100 },                -- angka doang
+        { "Speed", 100 },       -- string + angka
+        { LocalPlayer, 100 },   -- player + angka
+        { 100, 100, 100 },      -- tiga angka
+        { { speed = 100 } },    -- table
+    }
+    local ok = false
+    for _, args in ipairs(argsList) do
+        pcall(function()
+            if remote:IsA("RemoteEvent") then
+                remote:FireServer(unpack(args))
+            elseif remote:IsA("RemoteFunction") then
+                remote:InvokeServer(unpack(args))
+            end
+            ok = true
+        end)
+        if ok then break end
+    end
+    return ok
+end
+
+local function startRemoteRecon()
+    State.RemoteReconEnabled = true
+    if State.reconThread then pcall(function() task.cancel(State.reconThread) end); State.reconThread = nil end
+    State.reconThread = task.spawn(function()
+        while State.RemoteReconEnabled do
+            local now = os.clock()
+            if now - State.reconLast >= PERF.RECON_TTL then
+                State.reconLast = now
+                local found = scanRemotes()
+                State.remoteCandidates = found
+                local txt
+                if #found == 0 then
+                    txt = "TIDAK ADA REMOTE COCOK — kemungkinan server-authoritative"
+                else
+                    txt = string.format("NEMU %d REMOTE — coba FireServer generic", #found)
+                    -- coba fire tiap kandidat
+                    local fired = 0
+                    for _, c in ipairs(found) do
+                        if tryFireRemote(c.remote, c.name) then fired = fired + 1 end
+                    end
+                    txt = txt .. string.format(" (%d kepanggil)", fired)
+                end
+                State.reconSupport = txt
+                setLabel(ReconSupportLabel, "Remote Recon: " .. txt)
+            end
+            task.wait(2)
+        end
+    end)
+end
+
+local function stopRemoteRecon()
+    State.RemoteReconEnabled = false
+    if State.reconThread then pcall(function() task.cancel(State.reconThread) end); State.reconThread = nil end
+end
+
+-- ============================================================
+-- MULTI JUMP (TETAP, TAPI LOOP)
 -- ============================================================
 local jumpHolding = false
 local jumpHoldThread = nil
@@ -203,7 +453,7 @@ end
 local function toggleFly(v) if v then startFly() else stopFly() end end
 
 -- ============================================================
--- SPEED
+-- SPEED biasa (toggle lama)
 -- ============================================================
 local function applySpeed()
     local hum = getHum(); if not hum then return end
@@ -234,7 +484,7 @@ local function createESP(p)
     local char = p.Character
     if State.EspGlow and char then
         local hl = Instance.new("Highlight")
-        hl.Name = "OllieESP"; hl.FillColor = State.EspColor; hl.OutlineColor = State.EspColor
+        hl.Name = rndName("ESP"); hl.FillColor = State.EspColor; hl.OutlineColor = State.EspColor
         hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
         hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         hl.Adornee = char; hl.Parent = char; obj.highlight = hl
@@ -243,7 +493,7 @@ local function createESP(p)
         local head = char:FindFirstChild("Head")
         if head then
             local bb = Instance.new("BillboardGui")
-            bb.Name = "OllieESPName"; bb.Adornee = head
+            bb.Name = rndName("N"); bb.Adornee = head
             bb.Size = UDim2.new(0, 220, 0, 60); bb.StudsOffset = Vector3.new(0, 2.5, 0)
             bb.AlwaysOnTop = true; bb.Parent = head
             local nl = Instance.new("TextLabel")
@@ -266,7 +516,7 @@ local function createESP(p)
         local head = char:FindFirstChild("Head")
         if head then
             local hb = Instance.new("BillboardGui")
-            hb.Name = "OllieESPHealth"; hb.Adornee = head
+            hb.Name = rndName("HP"); hb.Adornee = head
             hb.Size = UDim2.new(0, 50, 0, 6); hb.StudsOffset = Vector3.new(0, 3.2, 0)
             hb.AlwaysOnTop = true; hb.Parent = head
             local bg = Instance.new("Frame")
@@ -465,9 +715,9 @@ end
 local function createWallhackGlow(p)
     if p == LocalPlayer then return end
     local char = p.Character; if not char then return end
-    local old = char:FindFirstChild("OllieWH"); if old then old:Destroy() end
+    local old = char:FindFirstChild(rndName("WH")); if old then old:Destroy() end
     local hl = Instance.new("Highlight")
-    hl.Name = "OllieWH"; hl.FillColor = State.WallhackColor
+    hl.Name = rndName("WH"); hl.FillColor = State.WallhackColor
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
     hl.FillTransparency = 0.55; hl.OutlineTransparency = 0
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -476,7 +726,11 @@ local function createWallhackGlow(p)
 end
 local function removeWallhackGlow(p)
     local char = p.Character
-    if char then local hl = char:FindFirstChild("OllieWH"); if hl then hl:Destroy() end end
+    if char then
+        for _, c in ipairs(char:GetChildren()) do
+            if c:IsA("Highlight") and c.Name:match("^WH_") then c:Destroy() end
+        end
+    end
     State.wallhackObjects[p] = nil
 end
 local function applyAllWallhackGlow()
@@ -519,9 +773,9 @@ end
 -- GOD MODE
 -- ============================================================
 local function runGodModeTest()
-    setGodSupportLabel("testing...")
+    setLabel(GodSupportLabel, "God Mode: testing...")
     task.spawn(function()
-        local hum = getHum(); if not hum then setGodSupportLabel("no humanoid"); return end
+        local hum = getHum(); if not hum then setLabel(GodSupportLabel, "God Mode: no humanoid"); return end
         local origMax = hum.MaxHealth; local origHealth = hum.Health
         local origStateEnabled = nil
         pcall(function() origStateEnabled = hum:GetStateEnabled(Enum.HumanoidStateType.Dead) end)
@@ -547,7 +801,7 @@ local function runGodModeTest()
         elseif score == 2 then txt = "SUPPORT PARSIAL (2/4)"
         elseif score == 1 then txt = "SUPPORT RENDAH (1/4)"
         else txt = "TIDAK SUPPORT (0/4)" end
-        setGodSupportLabel(txt); State.godTestDone = true; notify("ByVoid God Mode", txt)
+        setLabel(GodSupportLabel, "God Mode: " .. txt); State.godTestDone = true
     end)
 end
 local function applyGodMode(hum)
@@ -682,7 +936,7 @@ local function stopLowGfx()
 end
 
 -- ============================================================
--- AIMBOT BARU — FOV ring ungu + lookAt Head
+-- AIMBOT FOV RING
 -- ============================================================
 local function calculateTransparency(distance, fovRadius)
     local maxDistance = fovRadius
@@ -690,49 +944,40 @@ local function calculateTransparency(distance, fovRadius)
     if transparency < 0 then transparency = 0 end
     return transparency
 end
-
 local function getClosestPlayerInFOV(trg_part)
-    local nearest = nil
-    local last = math.huge
-    local playerMousePos = Camera.ViewportSize / 2
+    local nearest = nil; local last = math.huge
+    local center = Camera.ViewportSize / 2
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer then
             local char = player.Character
             local part = char and char:FindFirstChild(trg_part)
             if part then
                 local ePos, isVisible = Camera:WorldToViewportPoint(part.Position)
-                local distance = (Vector2.new(ePos.x, ePos.y) - playerMousePos).Magnitude
+                local distance = (Vector2.new(ePos.x, ePos.y) - center).Magnitude
                 if distance < last and isVisible and distance < State.AimbotFov then
-                    last = distance
-                    nearest = player
+                    last = distance; nearest = player
                 end
             end
         end
     end
     return nearest
 end
-
 local function lookAt(target)
     local lookVector = (target - Camera.CFrame.Position).unit
-    local newCFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + lookVector)
-    Camera.CFrame = newCFrame
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + lookVector)
 end
-
 local function aimbotRenderStep()
-    if not State.AimbotEnabled then return end
-    if not State.fovRing then return end
-
+    if not State.AimbotEnabled or not State.fovRing then return end
     State.fovRing.Position = Camera.ViewportSize / 2
     State.fovRing.Radius = State.AimbotFov
     State.fovRing.Color = State.AimbotRingColor
     State.fovRing.Visible = true
-
     local closest = getClosestPlayerInFOV(State.AimbotTargetPart)
     if closest and closest.Character then
-        local targetPart = closest.Character:FindFirstChild(State.AimbotTargetPart)
-        if targetPart then
-            lookAt(targetPart.Position)
-            local ePos, _ = Camera:WorldToViewportPoint(targetPart.Position)
+        local tp = closest.Character:FindFirstChild(State.AimbotTargetPart)
+        if tp then
+            lookAt(tp.Position)
+            local ePos = Camera:WorldToViewportPoint(tp.Position)
             local distance = (Vector2.new(ePos.x, ePos.y) - (Camera.ViewportSize / 2)).Magnitude
             State.fovRing.Transparency = calculateTransparency(distance, State.AimbotFov)
         end
@@ -740,36 +985,25 @@ local function aimbotRenderStep()
         State.fovRing.Transparency = 0.1
     end
 end
-
 local function createFovRing()
     if State.fovRing then return end
     local ok, ring = pcall(function() return Drawing.new("Circle") end)
     if ok and ring then
-        ring.Visible = true
-        ring.Thickness = 2
-        ring.Color = State.AimbotRingColor
-        ring.Filled = false
-        ring.Radius = State.AimbotFov
-        ring.Position = Camera.ViewportSize / 2
-        ring.Transparency = 0.1
-        State.fovRing = ring
+        ring.Visible = true; ring.Thickness = 2
+        ring.Color = State.AimbotRingColor; ring.Filled = false
+        ring.Radius = State.AimbotFov; ring.Position = Camera.ViewportSize / 2
+        ring.Transparency = 0.1; State.fovRing = ring
     end
 end
-
 local function destroyFovRing()
-    if State.fovRing then
-        pcall(function() State.fovRing:Remove() end)
-        State.fovRing = nil
-    end
+    if State.fovRing then pcall(function() State.fovRing:Remove() end); State.fovRing = nil end
 end
-
 local function startAimbot()
     State.AimbotEnabled = true
     createFovRing()
     pcall(function() RunService:UnbindFromRenderStep(State.AimbotBind) end)
     RunService:BindToRenderStep(State.AimbotBind, Enum.RenderPriority.Camera.Value + 1, aimbotRenderStep)
 end
-
 local function stopAimbot()
     State.AimbotEnabled = false
     pcall(function() RunService:UnbindFromRenderStep(State.AimbotBind) end)
@@ -797,7 +1031,7 @@ end
 -- FLY UI
 -- ============================================================
 local flyGui = Instance.new("ScreenGui")
-flyGui.Name = "OllieFlyUI"; flyGui.ResetOnSpawn = false
+flyGui.Name = rndName("UI"); flyGui.ResetOnSpawn = false
 flyGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 local upBtn = Instance.new("TextButton")
 upBtn.Size = UDim2.new(0, 60, 0, 60); upBtn.Position = UDim2.new(0, 20, 1, -160)
@@ -819,6 +1053,9 @@ _G.OllieFlyUI = {
     show = function() upBtn.Visible = true; downBtn.Visible = true end,
     hide = function() upBtn.Visible = false; downBtn.Visible = false end,
 }
+
+-- init speed/jump loop (dipanggil sekali, cek flag)
+speedJumpLoop()
 
 -- ============================================================
 -- UI RAYFIELD
@@ -851,7 +1088,47 @@ MoveTab:CreateSlider({ Name = "Walk Speed", Range = {16, 300}, Increment = 1, Su
     CurrentValue = 50, Flag = "WalkSpeed",
     Callback = function(v) State.WalkSpeed = v; applySpeed() end })
 
--- AIMBOT TAB (BARU)
+-- BYPASS TAB
+local BypassTab = Window:CreateTab("Bypass", 4483362458)
+BypassTab:CreateSection("A. Client-Side Anti-Detect")
+BypassTab:CreateToggle({ Name = "Enable Anti-Detect", CurrentValue = false, Flag = "AntiDetect",
+    Callback = function(v) if v then startAntiDetect() else stopAntiDetect() end end })
+BypassTab:CreateParagraph({ Title = "Info Anti-Detect",
+    Content = "protect_gui kalau executor support, randomize nama ScreenGui + Highlight + BillboardGui + FOV ring. Nyembunyiin ByVoid dari scan client-side. Nggak nembus anti-cheat server." })
+
+BypassTab:CreateSection("B. Speed / Jump Loop Re-Apply")
+BypassTab:CreateToggle({ Name = "Speed Bypass (loop re-apply)", CurrentValue = false, Flag = "SpdBypass",
+    Callback = function(v) State.SpeedBypassEnabled = v end })
+BypassTab:CreateSlider({ Name = "Speed Bypass Value", Range = {16, 300}, Increment = 1, Suffix = "ws",
+    CurrentValue = 50, Flag = "SpdBypassVal",
+    Callback = function(v) State.SpeedBypassValue = v end })
+BypassTab:CreateToggle({ Name = "Jump Bypass (loop JumpPower)", CurrentValue = false, Flag = "JmpBypass",
+    Callback = function(v) State.JumpBypassEnabled = v end })
+BypassTab:CreateSlider({ Name = "Jump Bypass Power", Range = {50, 300}, Increment = 5, Suffix = "jp",
+    CurrentValue = 100, Flag = "JmpBypassVal",
+    Callback = function(v) State.JumpBypassVelocity = v end })
+BypassTab:CreateButton({ Name = "Test Speed Support", Callback = runSpeedTest })
+SpeedSupportLabel = BypassTab:CreateLabel("Speed Support: belum dites")
+BypassTab:CreateButton({ Name = "Test Jump Support", Callback = runJumpTest })
+JumpSupportLabel = BypassTab:CreateLabel("Jump Support: belum dites")
+
+BypassTab:CreateSection("C. Auto-Recon Remote Generic")
+BypassTab:CreateToggle({ Name = "Enable Remote Recon", CurrentValue = false, Flag = "Recon",
+    Callback = function(v) if v then startRemoteRecon() else stopRemoteRecon() end end })
+BypassTab:CreateButton({ Name = "Scan Sekarang", Callback = function()
+    local found = scanRemotes()
+    State.remoteCandidates = found
+    local txt
+    if #found == 0 then txt = "TIDAK ADA REMOTE COCOK"
+    else txt = string.format("NEMU %d REMOTE", #found) end
+    State.reconSupport = txt
+    setLabel(ReconSupportLabel, "Remote Recon: " .. txt)
+end })
+ReconSupportLabel = BypassTab:CreateLabel("Remote Recon: belum dites")
+BypassTab:CreateParagraph({ Title = "Info Recon",
+    Content = "Scan ReplicatedStorage + Workspace cari RemoteEvent/Function yang namanya nyebut speed/move/jump/walk/char. Coba FireServer argumen generic. Kalau remote nggak bocor, server reject — hasil 'TIDAK ADA REMOTE COCOK' atau 'kepanggil tapi nggak ngefek'." })
+
+-- AIMBOT
 local AimTab = Window:CreateTab("Aimbot", 4483362458)
 AimTab:CreateSection("Aimbot — FOV Ring")
 AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aimbot",
@@ -869,14 +1146,13 @@ AimTab:CreateSlider({ Name = "Ring Transparency", Range = {0.01, 1}, Increment =
     Callback = function(v) State.AimbotMaxTransparency = v end })
 AimTab:CreateColorPicker({ Name = "Ring Color", Color = Color3.fromRGB(128, 0, 128), Flag = "AimColor",
     Callback = function(c) State.AimbotRingColor = c end })
-AimTab:CreateParagraph({ Title = "Info Aimbot",
-    Content = "Aimbot ini ngunci kamera ke target terdekat di dalam lingkaran FOV (lookAt). Transparansi ring dinamis: makin deket target ke center, makin solid. Target part bisa diganti. Kekurangan: kamera bisa kerasa kaku karena lookAt langsung. Kalau mau lebih lembut, turunin FOV radius biar target cuma diambil pas bener-bener deket center." })
 
+-- FUN
 local FunTab = Window:CreateTab("Fun", 4483362458)
 FunTab:CreateSection("God Mode")
 FunTab:CreateToggle({ Name = "Enable God Mode", CurrentValue = false, Flag = "God",
     Callback = function(v) if v then startGodMode() else stopGodMode() end end })
-GodSupportLabel = FunTab:CreateLabel("Map Support: belum dites")
+GodSupportLabel = FunTab:CreateLabel("God Mode: belum dites")
 FunTab:CreateButton({ Name = "Test Map Support", Callback = function()
     if not State.GodModeEnabled then notify("ByVoid", "aktifkan God Mode dulu"); return end
     State.godTestDone = false; runGodModeTest()
@@ -887,6 +1163,7 @@ FunTab:CreateToggle({ Name = "Enable Spinbot", CurrentValue = false, Flag = "Spi
 FunTab:CreateSlider({ Name = "Spin Speed", Range = {1, 100}, Increment = 1, Suffix = "deg",
     CurrentValue = 20, Flag = "SpinSpeed", Callback = function(v) State.SpinBotSpeed = v end })
 
+-- VISUAL
 local VisualTab = Window:CreateTab("Visual", 4483362458)
 VisualTab:CreateSection("POV / FOV Kamera")
 VisualTab:CreateToggle({ Name = "Enable POV Changer", CurrentValue = false, Flag = "Pov",
@@ -976,6 +1253,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     stopFly(); stopJumpHold(); stopSpinBot(); applySpeed()
     State.savedCollide = {}; State.rootCache = {}
     if State.NoclipEnabled then startNoclip() end
+    if State.SpeedBypassEnabled or State.JumpBypassEnabled then speedJumpLoop() end
 end)
 
-notify("ByVoid", "No system is safe — aimbot FOV ring loaded")
+notify("ByVoid", "v5.1 universal bypass loaded")
