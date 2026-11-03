@@ -1,10 +1,11 @@
 --[[
     ByVoid — No system is safe
-    update: AIMBOT DIPISAH
-      - SOFT AIM: kamera lerp pelan, bisa digeser lawan arah
-      - HARD LOCK: kamera snap, ngunci penuh
-      - dua toggle terpisah, nggak saling ganggu
-    semua fitur lama UTUH:
+    update: AIMBOT DIGANTI
+      - aimbot lama (soft + hard lock) DICABUT
+      - aimbot baru = FOV ring ungu + lookAt Head
+      - toggle + slider FOV + slider transparansi
+      - tombol Delete buat matiin ring (kalau perlu)
+    fitur UTUH:
       jump tahan, fly HP, speed, ESP brutal optimized, noclip,
       wallhack glow, spinbot, god mode, fullbright, low graphics, POV, tp
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
@@ -24,8 +25,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local PERF = {
     ESP_HZ = 30, ROOT_CACHE_TTL = 5,
-    AIMBOT_TARGET_EVERY = 3, BOX3D_EVERY = 2,
-    FB_LOOP = 5, LOWGFX_LOOP = 5,
+    BOX3D_EVERY = 2, FB_LOOP = 5, LOWGFX_LOOP = 5,
 }
 
 local State = {
@@ -46,32 +46,18 @@ local State = {
     FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
-    -- AIMBOT COMMON
+    -- AIMBOT BARU (dari script lo)
+    AimbotEnabled = false,
     AimbotTargetPart = "Head",
-    AimbotFov = 150,
-    AimbotPredict = true,
-    AimbotPredictAmount = 0.12,
-    AimbotShowFov = true,
-    AimbotColor = Color3.fromRGB(255, 50, 50),
-    aimbotTarget = nil, aimbotFrame = 0,
-    -- SOFT AIM
-    SoftAimEnabled = false,
-    SoftAimStrength = 0.15,     -- alpha lerp (kecil = soft, gede = keras)
-    SoftAimMode = "Cuma Pas Nembak", -- "Selalu Aktif" / "Cuma Pas Nembak"
-    softAimShooting = false,
-    -- HARD LOCK
-    HardLockEnabled = false,
-    HardLockMode = "Cuma Pas Nembak",
-    hardLockShooting = false,
-    -- misc
-    fovCircle = nil,
-    savedAutoRotate = nil,
+    AimbotFov = 40,
+    AimbotMaxTransparency = 0.1,
+    AimbotRingColor = Color3.fromRGB(128, 0, 128),
+    AimbotBind = "ByVoidAimbotRender",
+    fovRing = nil,
     SelectedPlayer = nil,
 }
 
 local GodSupportLabel = nil
-local SOFT_BIND = "ByVoidSoftAim"
-local HARD_BIND = "ByVoidHardLock"
 local lastESPUpdate = 0
 local box3DFrame = 0
 
@@ -696,191 +682,99 @@ local function stopLowGfx()
 end
 
 -- ============================================================
--- AIMBOT COMMON
+-- AIMBOT BARU — FOV ring ungu + lookAt Head
 -- ============================================================
-local function getTargetPart(char)
-    if not char then return nil end
-    if State.AimbotTargetPart == "Head" then return char:FindFirstChild("Head")
-    elseif State.AimbotTargetPart == "Badan" then
-        return char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
-    elseif State.AimbotTargetPart == "Kaki" then
-        return char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot") or char:FindFirstChild("LeftLeg") or char:FindFirstChild("RightLeg")
-    end
-    return char:FindFirstChild("Head")
+local function calculateTransparency(distance, fovRadius)
+    local maxDistance = fovRadius
+    local transparency = (1 - (distance / maxDistance)) * State.AimbotMaxTransparency
+    if transparency < 0 then transparency = 0 end
+    return transparency
 end
 
-local function findBestTarget()
-    local vp = Camera.ViewportSize
-    local center = Vector2.new(vp.X / 2, vp.Y / 2)
-    if State.aimbotTarget and State.aimbotTarget.player then
-        local p = State.aimbotTarget.player
-        if p.Parent then
-            local hrp, char = getPlayerRoot(p)
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local part = char and getTargetPart(char)
-            if part and hum and hum.Health > 0 then
-                local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= State.AimbotFov then return { player = p, part = part } end
-                end
-            end
-        end
-        State.aimbotTarget = nil
-    end
-    local best, bestDist = nil, math.huge
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            local hrp, char = getPlayerRoot(p)
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local part = char and getTargetPart(char)
-            if part and hum and hum.Health > 0 then
-                local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    if d <= State.AimbotFov and d < bestDist then
-                        bestDist = d; best = { player = p, part = part }
-                    end
+local function getClosestPlayerInFOV(trg_part)
+    local nearest = nil
+    local last = math.huge
+    local playerMousePos = Camera.ViewportSize / 2
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            local part = char and char:FindFirstChild(trg_part)
+            if part then
+                local ePos, isVisible = Camera:WorldToViewportPoint(part.Position)
+                local distance = (Vector2.new(ePos.x, ePos.y) - playerMousePos).Magnitude
+                if distance < last and isVisible and distance < State.AimbotFov then
+                    last = distance
+                    nearest = player
                 end
             end
         end
     end
-    return best
+    return nearest
 end
 
-local function destroyFovCircle()
-    if State.fovCircle then pcall(function() State.fovCircle:Remove() end); State.fovCircle = nil end
-end
-local function createFovCircle()
-    destroyFovCircle()
-    local ok, circle = pcall(function() return Drawing.new("Circle") end)
-    if ok and circle then
-        circle.Thickness = 1.5; circle.NumSides = 64
-        circle.Color = State.AimbotColor; circle.Filled = false
-        circle.Transparency = 0.85; circle.Visible = false
-        State.fovCircle = circle
-    end
-end
-local function updateFovCircle()
-    if not State.fovCircle then return end
-    local anyAim = State.SoftAimEnabled or State.HardLockEnabled
-    if anyAim and State.AimbotShowFov then
-        State.fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-        State.fovCircle.Radius = State.AimbotFov
-        State.fovCircle.Color = State.AimbotColor
-        State.fovCircle.Visible = true
-    else State.fovCircle.Visible = false end
+local function lookAt(target)
+    local lookVector = (target - Camera.CFrame.Position).unit
+    local newCFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + lookVector)
+    Camera.CFrame = newCFrame
 end
 
--- ============================================================
--- SOFT AIM — lerp pelan, bisa digeser lawan arah
--- ============================================================
-local function softAimShouldLock()
-    if not State.SoftAimEnabled then return false end
-    if State.SoftAimMode == "Selalu Aktif" then return true end
-    return State.softAimShooting
-end
+local function aimbotRenderStep()
+    if not State.AimbotEnabled then return end
+    if not State.fovRing then return end
 
-local function softAimRenderStep(dt)
-    updateFovCircle()
-    if not State.SoftAimEnabled then return end
-    if not softAimShouldLock() then return end
+    State.fovRing.Position = Camera.ViewportSize / 2
+    State.fovRing.Radius = State.AimbotFov
+    State.fovRing.Color = State.AimbotRingColor
+    State.fovRing.Visible = true
 
-    State.aimbotFrame = State.aimbotFrame + 1
-    if not State.aimbotTarget or State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
-        if State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
-            State.aimbotFrame = 0
-            State.aimbotTarget = findBestTarget()
+    local closest = getClosestPlayerInFOV(State.AimbotTargetPart)
+    if closest and closest.Character then
+        local targetPart = closest.Character:FindFirstChild(State.AimbotTargetPart)
+        if targetPart then
+            lookAt(targetPart.Position)
+            local ePos, _ = Camera:WorldToViewportPoint(targetPart.Position)
+            local distance = (Vector2.new(ePos.x, ePos.y) - (Camera.ViewportSize / 2)).Magnitude
+            State.fovRing.Transparency = calculateTransparency(distance, State.AimbotFov)
         end
+    else
+        State.fovRing.Transparency = 0.1
     end
-    local target = State.aimbotTarget
-    if not target or not target.part or not target.part.Parent then return end
-
-    local camPos = Camera.CFrame.Position
-    local targetPos = target.part.Position
-    if State.AimbotPredict then targetPos = targetPos + target.part.AssemblyLinearVelocity * State.AimbotPredictAmount end
-    local desired = CFrame.lookAt(camPos, targetPos)
-
-    -- alpha kecil = soft. User bisa lawan arah karena kamera cuma ditarik sebagian.
-    local alpha = math.clamp(State.SoftAimStrength, 0.02, 0.5)
-    Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
 end
 
-local function startSoftAim()
-    State.SoftAimEnabled = true
-    pcall(function() RunService:UnbindFromRenderStep(SOFT_BIND) end)
-    RunService:BindToRenderStep(SOFT_BIND, Enum.RenderPriority.Camera.Value + 1, softAimRenderStep)
-end
-local function stopSoftAim()
-    State.SoftAimEnabled = false
-    pcall(function() RunService:UnbindFromRenderStep(SOFT_BIND) end)
-end
-
--- ============================================================
--- HARD LOCK — snap mutlak
--- ============================================================
-local function hardLockShouldLock()
-    if not State.HardLockEnabled then return false end
-    if State.HardLockMode == "Selalu Aktif" then return true end
-    return State.hardLockShooting
-end
-
-local function hardLockRenderStep(dt)
-    updateFovCircle()
-    if not State.HardLockEnabled then return end
-    if not hardLockShouldLock() then return end
-
-    State.aimbotFrame = State.aimbotFrame + 1
-    if not State.aimbotTarget or State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
-        if State.aimbotFrame >= PERF.AIMBOT_TARGET_EVERY then
-            State.aimbotFrame = 0
-            State.aimbotTarget = findBestTarget()
-        end
+local function createFovRing()
+    if State.fovRing then return end
+    local ok, ring = pcall(function() return Drawing.new("Circle") end)
+    if ok and ring then
+        ring.Visible = true
+        ring.Thickness = 2
+        ring.Color = State.AimbotRingColor
+        ring.Filled = false
+        ring.Radius = State.AimbotFov
+        ring.Position = Camera.ViewportSize / 2
+        ring.Transparency = 0.1
+        State.fovRing = ring
     end
-    local target = State.aimbotTarget
-    if not target or not target.part or not target.part.Parent then return end
-
-    local camPos = Camera.CFrame.Position
-    local targetPos = target.part.Position
-    if State.AimbotPredict then targetPos = targetPos + target.part.AssemblyLinearVelocity * State.AimbotPredictAmount end
-    Camera.CFrame = CFrame.lookAt(camPos, targetPos)
 end
 
-local function startHardLock()
-    State.HardLockEnabled = true
-    pcall(function() RunService:UnbindFromRenderStep(HARD_BIND) end)
-    RunService:BindToRenderStep(HARD_BIND, Enum.RenderPriority.Camera.Value + 1, hardLockRenderStep)
-end
-local function stopHardLock()
-    State.HardLockEnabled = false
-    pcall(function() RunService:UnbindFromRenderStep(HARD_BIND) end)
+local function destroyFovRing()
+    if State.fovRing then
+        pcall(function() State.fovRing:Remove() end)
+        State.fovRing = nil
+    end
 end
 
--- ============================================================
--- INPUT — shoot trigger + fov circle
--- ============================================================
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    local isShoot = false
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then isShoot = true
-    elseif input.UserInputType == Enum.UserInputType.Touch then
-        local vp = Camera.ViewportSize
-        if input.Position.X > vp.X * 0.5 then isShoot = true end
-    end
-    if isShoot then
-        State.softAimShooting = true
-        State.hardLockShooting = true
-    end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        State.softAimShooting = false
-        State.hardLockShooting = false
-    end
-end)
+local function startAimbot()
+    State.AimbotEnabled = true
+    createFovRing()
+    pcall(function() RunService:UnbindFromRenderStep(State.AimbotBind) end)
+    RunService:BindToRenderStep(State.AimbotBind, Enum.RenderPriority.Camera.Value + 1, aimbotRenderStep)
+end
 
--- init fov circle
-createFovCircle()
+local function stopAimbot()
+    State.AimbotEnabled = false
+    pcall(function() RunService:UnbindFromRenderStep(State.AimbotBind) end)
+    destroyFovRing()
+end
 
 -- ============================================================
 -- TP
@@ -957,57 +851,26 @@ MoveTab:CreateSlider({ Name = "Walk Speed", Range = {16, 300}, Increment = 1, Su
     CurrentValue = 50, Flag = "WalkSpeed",
     Callback = function(v) State.WalkSpeed = v; applySpeed() end })
 
--- SOFT AIM TAB
-local SoftTab = Window:CreateTab("Soft Aim", 4483362458)
-SoftTab:CreateSection("Soft Aim — Tarik Pelan, Bisa Digeser")
-SoftTab:CreateToggle({ Name = "Enable Soft Aim", CurrentValue = false, Flag = "SoftAim",
-    Callback = function(v) if v then startSoftAim() else stopSoftAim() end end })
-SoftTab:CreateDropdown({
-    Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
-    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "SoftMode",
-    Callback = function(opt) if opt and opt[1] then State.SoftAimMode = opt[1] end end,
-})
-SoftTab:CreateSlider({ Name = "Kekuatan Tarik (kecil = soft)", Range = {0.02, 0.5}, Increment = 0.01,
-    CurrentValue = 0.15, Flag = "SoftStrength",
-    Callback = function(v) State.SoftAimStrength = v end })
-SoftTab:CreateParagraph({ Title = "Info Soft Aim",
-    Content = "Kamera ditarik sebagian ke target tiap frame. Kamu masih bisa geser layar lawan arah. Kekuatan 0.15 = tarik lembut, 0.4 = tarik keras tapi masih bisa dilawan. Beda dari hard lock yang snap mutlak." })
-
--- HARD LOCK TAB
-local HardTab = Window:CreateTab("Hard Lock", 4483362458)
-HardTab:CreateSection("Hard Lock — Snap Mutlak")
-HardTab:CreateToggle({ Name = "Enable Hard Lock", CurrentValue = false, Flag = "HardLock",
-    Callback = function(v) if v then startHardLock() else stopHardLock() end end })
-HardTab:CreateDropdown({
-    Name = "Mode Aktif", Options = {"Selalu Aktif", "Cuma Pas Nembak"},
-    CurrentOption = {"Cuma Pas Nembak"}, MultipleOptions = false, Flag = "HardMode",
-    Callback = function(opt) if opt and opt[1] then State.HardLockMode = opt[1] end end,
-})
-HardTab:CreateParagraph({ Title = "Info Hard Lock",
-    Content = "Kamera snap langsung ke target. Nggak bisa digeser selama lock. Pakai kalau mau lock brutal — sama kayak aimbot versi sebelumnya." })
-
--- AIM COMMON TAB
-local AimCommonTab = Window:CreateTab("Aim Common", 4483362458)
-AimCommonTab:CreateSection("Target & FOV (berlaku buat Soft Aim + Hard Lock)")
-AimCommonTab:CreateDropdown({
-    Name = "Target Part", Options = {"Head", "Badan", "Kaki"},
+-- AIMBOT TAB (BARU)
+local AimTab = Window:CreateTab("Aimbot", 4483362458)
+AimTab:CreateSection("Aimbot — FOV Ring")
+AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aimbot",
+    Callback = function(v) if v then startAimbot() else stopAimbot() end end })
+AimTab:CreateDropdown({
+    Name = "Target Part", Options = {"Head", "UpperTorso", "Torso", "HumanoidRootPart", "LeftFoot", "RightFoot"},
     CurrentOption = {"Head"}, MultipleOptions = false, Flag = "AimPart",
     Callback = function(opt) if opt and opt[1] then State.AimbotTargetPart = opt[1] end end,
 })
-AimCommonTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 600}, Increment = 5, Suffix = "px",
-    CurrentValue = 150, Flag = "AimFov",
+AimTab:CreateSlider({ Name = "FOV Radius (pixel)", Range = {20, 400}, Increment = 5, Suffix = "px",
+    CurrentValue = 40, Flag = "AimFov",
     Callback = function(v) State.AimbotFov = v end })
-AimCommonTab:CreateToggle({ Name = "Prediction", CurrentValue = true, Flag = "AimPredict",
-    Callback = function(v) State.AimbotPredict = v end })
-AimCommonTab:CreateSlider({ Name = "Prediction Amount", Range = {0, 0.5}, Increment = 0.02, Suffix = "s",
-    CurrentValue = 0.12, Flag = "AimPredictAmt",
-    Callback = function(v) State.AimbotPredictAmount = v end })
-AimCommonTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "AimFovShow",
-    Callback = function(v) State.AimbotShowFov = v end })
-AimCommonTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 50, 50), Flag = "AimColor",
-    Callback = function(color) State.AimbotColor = color end })
-AimCommonTab:CreateParagraph({ Title = "Catatan",
-    Content = "Soft Aim dan Hard Lock pakai target & FOV yang sama. Jangan aktifin dua-duanya barengan — pilih salah satu. Kalau dua-duanya ON, Hard Lock menang karena bind priority sama tapi dieksekusi terakhir." })
+AimTab:CreateSlider({ Name = "Ring Transparency", Range = {0.01, 1}, Increment = 0.01,
+    CurrentValue = 0.1, Flag = "AimTrans",
+    Callback = function(v) State.AimbotMaxTransparency = v end })
+AimTab:CreateColorPicker({ Name = "Ring Color", Color = Color3.fromRGB(128, 0, 128), Flag = "AimColor",
+    Callback = function(c) State.AimbotRingColor = c end })
+AimTab:CreateParagraph({ Title = "Info Aimbot",
+    Content = "Aimbot ini ngunci kamera ke target terdekat di dalam lingkaran FOV (lookAt). Transparansi ring dinamis: makin deket target ke center, makin solid. Target part bisa diganti. Kekurangan: kamera bisa kerasa kaku karena lookAt langsung. Kalau mau lebih lembut, turunin FOV radius biar target cuma diambil pas bener-bener deket center." })
 
 local FunTab = Window:CreateTab("Fun", 4483362458)
 FunTab:CreateSection("God Mode")
@@ -1111,8 +974,8 @@ Players.PlayerRemoving:Connect(function() task.wait(0.5); refreshList() end)
 LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1)
     stopFly(); stopJumpHold(); stopSpinBot(); applySpeed()
-    State.savedCollide = {}; State.savedAutoRotate = nil; State.rootCache = {}
+    State.savedCollide = {}; State.rootCache = {}
     if State.NoclipEnabled then startNoclip() end
 end)
 
-notify("ByVoid", "No system is safe — soft aim + hard lock dipisah")
+notify("ByVoid", "No system is safe — aimbot FOV ring loaded")
